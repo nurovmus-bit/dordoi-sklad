@@ -1,4 +1,6 @@
 // Local server (dev & self-hosted). On Vercel, the API runs from api/index.ts instead.
+// All API routes live in server/app.ts; data goes through server/storage.ts
+// (Upstash Redis when its env vars are set, otherwise data/local-kv.json).
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';

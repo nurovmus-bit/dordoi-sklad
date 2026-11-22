@@ -43,7 +43,7 @@ interface ZavskladStageProps {
   }) => void;
   onAddStockToExisting: (productId: string, addQty: number) => void;
   onDeleteProduct: (productId: string) => void;
-  onGoToDispatch: (productId?: string) => void;
+  onGoToDispatch?: (productId?: string) => void;
 }
 
 export const ZavskladStage: React.FC<ZavskladStageProps> = ({
@@ -403,14 +403,16 @@ export const ZavskladStage: React.FC<ZavskladStageProps> = ({
                   className="w-48 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 py-2 pl-9 pr-3 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"
                 />
               </div>
-              <button
-                type="button"
-                onClick={() => onGoToDispatch()}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
-              >
-                {t.zavsklad.goDispatchBtn}
-                <ArrowRight className="h-3.5 w-3.5" />
-              </button>
+              {onGoToDispatch && (
+                <button
+                  type="button"
+                  onClick={() => onGoToDispatch()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
+                >
+                  {t.zavsklad.goDispatchBtn}
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -522,14 +524,16 @@ export const ZavskladStage: React.FC<ZavskladStageProps> = ({
                             >
                               {t.zavsklad.restockBtn}
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => onGoToDispatch(p.id)}
-                              disabled={p.remaining <= 0}
-                              className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-1.5 text-xs font-medium text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 disabled:opacity-40 whitespace-nowrap"
-                            >
-                              {t.zavsklad.dispatchBtn}
-                            </button>
+                            {onGoToDispatch && (
+                              <button
+                                type="button"
+                                onClick={() => onGoToDispatch(p.id)}
+                                disabled={p.remaining <= 0}
+                                className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-1.5 text-xs font-medium text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 disabled:opacity-40 whitespace-nowrap"
+                              >
+                                {t.zavsklad.dispatchBtn}
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => onDeleteProduct(p.id)}

@@ -1,67 +1,111 @@
 import fs from 'fs';
 import path from 'path';
 import { Redis } from '@upstash/redis';
-import { INITIAL_WAREHOUSE_STATE } from '../src/data/initialData.js';
-import type { WarehouseState } from '../src/types/warehouse.js';
 
-const REDIS_KEY = 'dordoi-sklad:state';
+// Small key-value store:
+//  - Vercel / production: Upstash Redis (KV_REST_API_* or UPSTASH_REDIS_REST_* env vars)
+//  - Local development: in-memory map persisted to data/local-kv.json
+// Everything (warehouse state, staff list, admin auth, sessions) goes through here,
+// so that serverless instances share the same data and sessions.
 
-// Upstash (Vercel Marketplace) env vars: KV_REST_API_* or UPSTASH_REDIS_REST_*.
+const PREFIX = 'dordoi-sklad:';
+
 const redisUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const redis = redisUrl && redisToken ? new Redis({ url: redisUrl, token: redisToken }) : null;
 
-// Local fallback (development): JSON file in ./data
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DATA_FILE = path.join(DATA_DIR, 'warehouse.json');
-
 export const storageKind = redis ? 'redis' : 'file';
 
-export function normalizeState(parsed: Partial<WarehouseState> | null | undefined): WarehouseState {
-  const p = parsed ?? {};
-  const pick = <K extends keyof WarehouseState>(key: K): WarehouseState[K] =>
-    (Array.isArray(p[key]) ? p[key] : INITIAL_WAREHOUSE_STATE[key]) as WarehouseState[K];
-  return {
-    models: pick('models'),
-    fabricRolls: pick('fabricRolls'),
-    cuttingBatches: pick('cuttingBatches'),
-    sewingBatches: pick('sewingBatches'),
-    packingBatches: pick('packingBatches'),
-    products: pick('products'),
-    dispatches: pick('dispatches'),
-  };
+// ---------- local file fallback ----------
+interface LocalEntry {
+  value: unknown;
+  expiresAt?: number;
 }
+const LOCAL_FILE = path.resolve(process.cwd(), 'data', 'local-kv.json');
+let localCache: Record<string, LocalEntry> | null = null;
 
-function writeFile(state: WarehouseState): void {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), 'utf-8');
-}
-
-export async function loadState(): Promise<WarehouseState> {
-  if (redis) {
-    const stored = await redis.get<WarehouseState>(REDIS_KEY);
-    if (!stored) {
-      await redis.set(REDIS_KEY, INITIAL_WAREHOUSE_STATE);
-      return INITIAL_WAREHOUSE_STATE;
-    }
-    return normalizeState(stored);
-  }
-  if (!fs.existsSync(DATA_FILE)) {
-    writeFile(INITIAL_WAREHOUSE_STATE);
-    return INITIAL_WAREHOUSE_STATE;
-  }
+function local(): Record<string, LocalEntry> {
+  if (localCache) return localCache;
   try {
-    return normalizeState(JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8')));
+    localCache = JSON.parse(fs.readFileSync(LOCAL_FILE, 'utf-8'));
   } catch {
-    writeFile(INITIAL_WAREHOUSE_STATE);
-    return INITIAL_WAREHOUSE_STATE;
+    localCache = {};
   }
+  return localCache!;
 }
 
-export async function saveState(state: WarehouseState): Promise<void> {
+function persistLocal(): void {
+  fs.mkdirSync(path.dirname(LOCAL_FILE), { recursive: true });
+  fs.writeFileSync(LOCAL_FILE, JSON.stringify(localCache ?? {}, null, 2), 'utf-8');
+}
+
+function localGet(key: string): unknown {
+  const entry = local()[key];
+  if (!entry) return null;
+  if (entry.expiresAt && entry.expiresAt < Date.now()) {
+    delete local()[key];
+    persistLocal();
+    return null;
+  }
+  return entry.value;
+}
+
+// ---------- public API ----------
+export async function kvGet<T>(key: string): Promise<T | null> {
+  if (redis) return (await redis.get<T>(PREFIX + key)) ?? null;
+  return (localGet(key) as T) ?? null;
+}
+
+export async function kvSet(key: string, value: unknown, ttlMs?: number): Promise<void> {
   if (redis) {
-    await redis.set(REDIS_KEY, state);
+    if (ttlMs) await redis.set(PREFIX + key, value, { px: ttlMs });
+    else await redis.set(PREFIX + key, value);
     return;
   }
-  writeFile(state);
+  local()[key] = { value, expiresAt: ttlMs ? Date.now() + ttlMs : undefined };
+  persistLocal();
+}
+
+/** Set only if the key does not exist yet. Returns true when the value was written. */
+export async function kvSetIfAbsent(key: string, value: unknown): Promise<boolean> {
+  if (redis) return (await redis.set(PREFIX + key, value, { nx: true })) === 'OK';
+  if (localGet(key) !== null) return false;
+  await kvSet(key, value);
+  return true;
+}
+
+export async function kvDel(...keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  if (redis) {
+    await redis.del(...keys.map((k) => PREFIX + k));
+    return;
+  }
+  for (const k of keys) delete local()[k];
+  persistLocal();
+}
+
+export async function kvSetAdd(key: string, member: string): Promise<void> {
+  if (redis) {
+    await redis.sadd(PREFIX + key, member);
+    return;
+  }
+  const cur = (localGet(key) as string[] | null) ?? [];
+  if (!cur.includes(member)) await kvSet(key, [...cur, member]);
+}
+
+export async function kvSetRemove(key: string, member: string): Promise<void> {
+  if (redis) {
+    await redis.srem(PREFIX + key, member);
+    return;
+  }
+  const cur = (localGet(key) as string[] | null) ?? [];
+  await kvSet(
+    key,
+    cur.filter((m) => m !== member)
+  );
+}
+
+export async function kvSetMembers(key: string): Promise<string[]> {
+  if (redis) return await redis.smembers(PREFIX + key);
+  return ((localGet(key) as string[] | null) ?? []).slice();
 }

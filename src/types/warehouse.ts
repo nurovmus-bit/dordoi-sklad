@@ -1,12 +1,44 @@
-export type StageKey =
-  | 'overview'
-  | 'models'
+export type EmployeeStageKey =
   | 'fabric'
   | 'cutting'
   | 'sewing'
   | 'packing'
   | 'zavsklad'
   | 'dispatch';
+
+export type StageKey = 'overview' | 'models' | 'staff' | EmployeeStageKey;
+
+export const EMPLOYEE_STAGES: EmployeeStageKey[] = [
+  'fabric',
+  'cutting',
+  'sewing',
+  'packing',
+  'zavsklad',
+  'dispatch',
+];
+
+export interface StaffMember {
+  id: string;
+  name: string;
+  roleNote?: string;
+  allowedStage: EmployeeStageKey;
+  seamstressName?: string;
+  inviteToken?: string;
+  active: boolean;
+  connected: boolean;
+  connectedAt: string | null;
+  lastSeenAt: string | null;
+  deviceInfo: string | null;
+  createdAt: string;
+}
+
+export interface StaffSessionProfile {
+  id: string;
+  name: string;
+  roleNote?: string;
+  allowedStage: EmployeeStageKey;
+  seamstressName?: string;
+}
 
 export type UiVariant = 'classic' | 'floor';
 

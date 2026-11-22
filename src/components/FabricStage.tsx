@@ -15,7 +15,7 @@ interface FabricStageProps {
     supplier: string;
   }) => void;
   onDeleteRoll: (id: string) => void;
-  onGoToCutting: () => void;
+  onGoToCutting?: () => void;
 }
 
 export const FabricStage: React.FC<FabricStageProps> = ({
@@ -197,14 +197,16 @@ export const FabricStage: React.FC<FabricStageProps> = ({
                   className="w-44 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 py-2 pl-9 pr-3 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"
                 />
               </div>
-              <button
-                type="button"
-                onClick={onGoToCutting}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
-              >
-                {t.fabric.goCutting}
-                <ArrowRight className="h-3.5 w-3.5" />
-              </button>
+              {onGoToCutting && (
+                <button
+                  type="button"
+                  onClick={onGoToCutting}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
+                >
+                  {t.fabric.goCutting}
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           </div>
 

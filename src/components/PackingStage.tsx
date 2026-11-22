@@ -14,7 +14,7 @@ interface PackingStageProps {
     color: string;
     packedPieces: number;
   }) => void;
-  onGoToZavsklad: () => void;
+  onGoToZavsklad?: () => void;
 }
 
 export const PackingStage: React.FC<PackingStageProps> = ({
@@ -73,14 +73,16 @@ export const PackingStage: React.FC<PackingStageProps> = ({
             <Plus className="h-3.5 w-3.5" />
             {t.packing.manualAddBtn}
           </button>
-          <button
-            type="button"
-            onClick={onGoToZavsklad}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
-          >
-            {t.packing.goZavskladBtn}
-            <ArrowRight className="h-3.5 w-3.5" />
-          </button>
+          {onGoToZavsklad && (
+            <button
+              type="button"
+              onClick={onGoToZavsklad}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
+            >
+              {t.packing.goZavskladBtn}
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
