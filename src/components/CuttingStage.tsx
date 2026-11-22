@@ -19,8 +19,8 @@ interface CuttingStageProps {
     note?: string;
   }) => { ok: boolean; error?: string; batch?: CuttingBatch };
   onOpenBatchQr: (batch: CuttingBatch) => void;
-  onGoToModels: () => void;
-  onGoToSewing: () => void;
+  onGoToModels?: () => void;
+  onGoToSewing?: () => void;
 }
 
 export const CuttingStage: React.FC<CuttingStageProps> = ({
@@ -119,13 +119,15 @@ export const CuttingStage: React.FC<CuttingStageProps> = ({
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
               {t.cutting.modelSelectLabel}
             </label>
-            <button
-              type="button"
-              onClick={onGoToModels}
-              className="text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:underline"
-            >
-              {t.cutting.newModelLink}
-            </button>
+            {onGoToModels && (
+              <button
+                type="button"
+                onClick={onGoToModels}
+                className="text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:underline"
+              >
+                {t.cutting.newModelLink}
+              </button>
+            )}
           </div>
           <select
             value={selectedModelId}
@@ -263,14 +265,16 @@ export const CuttingStage: React.FC<CuttingStageProps> = ({
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">{t.cutting.listSub}</p>
           </div>
-          <button
-            type="button"
-            onClick={onGoToSewing}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
-          >
-            {t.cutting.goSewing}
-            <ArrowRight className="h-3.5 w-3.5" />
-          </button>
+          {onGoToSewing && (
+            <button
+              type="button"
+              onClick={onGoToSewing}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
+            >
+              {t.cutting.goSewing}
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">

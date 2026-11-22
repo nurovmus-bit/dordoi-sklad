@@ -7,6 +7,7 @@ import { Translations } from '../i18n/translations';
 interface SewingStageProps {
   batches: SewingBatch[];
   t: Translations;
+  lockedSeamstress?: string;
   onUpdateSewn: (id: string, sewnPieces: number, defectPieces: number) => void;
   onAddTask: (payload: {
     modelName: string;
@@ -16,22 +17,23 @@ interface SewingStageProps {
     assignedPieces: number;
   }) => void;
   onSendToPacking: (id: string) => void;
-  onGoToPacking: () => void;
+  onGoToPacking?: () => void;
 }
 
 export const SewingStage: React.FC<SewingStageProps> = ({
   batches,
   t,
+  lockedSeamstress,
   onUpdateSewn,
   onAddTask,
   onSendToPacking,
   onGoToPacking,
 }) => {
-  const [seamstressFilter, setSeamstressFilter] = useState<string>('all');
+  const [seamstressFilter, setSeamstressFilter] = useState<string>(lockedSeamstress || 'all');
   const [showAddForm, setShowAddForm] = useState(false);
   const [modelName, setModelName] = useState('');
   const [color, setColor] = useState('Кара');
-  const [seamstressName, setSeamstressName] = useState<string>(SEAMSTRESSES[0]);
+  const [seamstressName, setSeamstressName] = useState<string>(lockedSeamstress || SEAMSTRESSES[0]);
   const [machineType, setMachineType] = useState<MachineType>('Түз тигүү');
   const [assignedPieces, setAssignedPieces] = useState('');
 
@@ -39,8 +41,9 @@ export const SewingStage: React.FC<SewingStageProps> = ({
   const [editSewn, setEditSewn] = useState('');
   const [editDefect, setEditDefect] = useState('0');
 
+  const effectiveFilter = lockedSeamstress || seamstressFilter;
   const activeBatches = batches.filter((b) =>
-    seamstressFilter === 'all' ? true : b.seamstressName === seamstressFilter
+    effectiveFilter === 'all' ? true : b.seamstressName === effectiveFilter
   );
 
   const handleStartEdit = (batch: SewingBatch) => {
@@ -75,33 +78,39 @@ export const SewingStage: React.FC<SewingStageProps> = ({
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white/90 dark:bg-slate-900/85 backdrop-blur-md p-4">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1">
-          <button
-            type="button"
-            onClick={() => setSeamstressFilter('all')}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              seamstressFilter === 'all'
-                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
-                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            {t.sewing.allTab(batches.length)}
-          </button>
-          {SEAMSTRESSES.map((name) => (
+        {lockedSeamstress ? (
+          <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            {lockedSeamstress} · {activeBatches.length}
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1">
             <button
-              key={name}
               type="button"
-              onClick={() => setSeamstressFilter(name)}
+              onClick={() => setSeamstressFilter('all')}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                seamstressFilter === name
+                seamstressFilter === 'all'
                   ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              {name}
+              {t.sewing.allTab(batches.length)}
             </button>
-          ))}
-        </div>
+            {SEAMSTRESSES.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => setSeamstressFilter(name)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  seamstressFilter === name
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <button
@@ -112,14 +121,16 @@ export const SewingStage: React.FC<SewingStageProps> = ({
             <Plus className="h-3.5 w-3.5" />
             {t.sewing.addTaskBtn}
           </button>
-          <button
-            type="button"
-            onClick={onGoToPacking}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800 dark:hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0"
-          >
-            {t.sewing.goPackingBtn}
-            <ArrowRight className="h-3.5 w-3.5" />
-          </button>
+          {onGoToPacking && (
+            <button
+              type="button"
+              onClick={onGoToPacking}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800 dark:hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0"
+            >
+              {t.sewing.goPackingBtn}
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -145,9 +156,10 @@ export const SewingStage: React.FC<SewingStageProps> = ({
               {t.sewing.seamstressLabel}
             </label>
             <select
-              value={seamstressName}
+              value={lockedSeamstress || seamstressName}
+              disabled={Boolean(lockedSeamstress)}
               onChange={(e) => setSeamstressName(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:border-slate-900 focus:outline-none"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 disabled:opacity-60 focus:border-slate-900 focus:outline-none"
             >
               {SEAMSTRESSES.map((s) => (
                 <option key={s} value={s}>

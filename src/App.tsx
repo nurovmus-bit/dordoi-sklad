@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   LayoutGrid,
   QrCode,
@@ -14,14 +14,20 @@ import {
   Sun,
   Moon,
   Languages,
+  UserCheck,
+  LogOut,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   CuttingBatch,
+  EmployeeStageKey,
   FabricRoll,
   GarmentModel,
   MachineType,
   PackingBatch,
   ProductStock,
+  StaffMember,
+  StaffSessionProfile,
   StageKey,
   UiVariant,
   WarehouseState,
@@ -30,6 +36,7 @@ import { createId, INITIAL_WAREHOUSE_STATE } from './data/initialData';
 import { Lang, TRANSLATIONS } from './i18n/translations';
 import { PipelineOverview } from './components/PipelineOverview';
 import { AdminModelsStage } from './components/AdminModelsStage';
+import { AdminStaffStage } from './components/AdminStaffStage';
 import { FabricStage } from './components/FabricStage';
 import { CuttingStage } from './components/CuttingStage';
 import { SewingStage } from './components/SewingStage';
@@ -37,43 +44,23 @@ import { PackingStage } from './components/PackingStage';
 import { ZavskladStage } from './components/ZavskladStage';
 import { DispatchStage } from './components/DispatchStage';
 import { QrCodeModal } from './components/QrCodeModal';
+import { StaffQrModal } from './components/StaffQrModal';
 import { QrModelViewer } from './components/QrModelViewer';
 import { ConfirmModal } from './components/ConfirmModal';
+import { AdminAuthGate } from './components/AdminAuthGate';
 
-const STORAGE_KEY = 'dordoi_sklad_state_v2';
 const VARIANT_KEY = 'dordoi_sklad_variant_v1';
 const LANG_KEY = 'dordoi_sklad_lang_v1';
 
-function loadFallbackState(): WarehouseState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return INITIAL_WAREHOUSE_STATE;
-    const parsed = JSON.parse(raw) as Partial<WarehouseState>;
-    return {
-      models: Array.isArray(parsed.models) ? parsed.models : INITIAL_WAREHOUSE_STATE.models,
-      fabricRolls: Array.isArray(parsed.fabricRolls)
-        ? parsed.fabricRolls
-        : INITIAL_WAREHOUSE_STATE.fabricRolls,
-      cuttingBatches: Array.isArray(parsed.cuttingBatches)
-        ? parsed.cuttingBatches
-        : INITIAL_WAREHOUSE_STATE.cuttingBatches,
-      sewingBatches: Array.isArray(parsed.sewingBatches)
-        ? parsed.sewingBatches
-        : INITIAL_WAREHOUSE_STATE.sewingBatches,
-      packingBatches: Array.isArray(parsed.packingBatches)
-        ? parsed.packingBatches
-        : INITIAL_WAREHOUSE_STATE.packingBatches,
-      products: Array.isArray(parsed.products)
-        ? parsed.products
-        : INITIAL_WAREHOUSE_STATE.products,
-      dispatches: Array.isArray(parsed.dispatches)
-        ? parsed.dispatches
-        : INITIAL_WAREHOUSE_STATE.dispatches,
-    };
-  } catch {
-    return INITIAL_WAREHOUSE_STATE;
-  }
-}
+const EMPTY_STATE: WarehouseState = {
+  models: [],
+  fabricRolls: [],
+  cuttingBatches: [],
+  sewingBatches: [],
+  packingBatches: [],
+  products: [],
+  dispatches: [],
+};
 
 function loadInitialVariant(): UiVariant {
   try {
@@ -93,14 +80,40 @@ function loadInitialLang(): Lang {
   }
 }
 
-function readQrParams(): { modelId: string | null; batchId: string | null } {
-  if (typeof window === 'undefined') return { modelId: null, batchId: null };
+function readInitialUrlParams(): {
+  modelId: string | null;
+  batchId: string | null;
+  staffToken: string | null;
+} {
+  if (typeof window === 'undefined') {
+    return { modelId: null, batchId: null, staffToken: null };
+  }
   const params = new URLSearchParams(window.location.search);
   return {
     modelId: params.get('model'),
     batchId: params.get('batch'),
+    staffToken: params.get('staff'),
   };
 }
+
+function detectDeviceLabel(): string {
+  if (typeof navigator === 'undefined') return 'Телефон';
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad/i.test(ua)) return 'iPhone · Mobile';
+  if (/Android/i.test(ua)) return 'Android · Mobile';
+  if (/Mobile/i.test(ua)) return 'Mobile';
+  return 'Компьютер / Браузер';
+}
+
+type AuthPhase =
+  | 'checking'
+  | 'setup'
+  | 'login'
+  | 'connecting'
+  | 'authenticated'
+  | 'revoked'
+  | 'invalid_qr'
+  | 'disabled_qr';
 
 interface NavItem {
   key: StageKey;
@@ -111,33 +124,52 @@ interface NavItem {
 }
 
 export default function App() {
-  const [state, setState] = useState<WarehouseState>(loadFallbackState);
-  const [serverLoaded, setServerLoaded] = useState(false);
+  const [state, setState] = useState<WarehouseState>(EMPTY_STATE);
+  const [stateLoaded, setStateLoaded] = useState(false);
   const [variant, setVariant] = useState<UiVariant>(loadInitialVariant);
   const [lang, setLang] = useState<Lang>(loadInitialLang);
   const [activeStage, setActiveStage] = useState<StageKey>('overview');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [preselectedDispatchProductId, setPreselectedDispatchProductId] = useState<
-    string | null
-  >(null);
+  const [preselectedDispatchProductId, setPreselectedDispatchProductId] = useState<string | null>(
+    null
+  );
 
-  const t = TRANSLATIONS[lang];
+  // Auth & RBAC state (tokens kept strictly in React memory — never in localStorage)
+  const [authPhase, setAuthPhase] = useState<AuthPhase>('checking');
+  const [authRole, setAuthRole] = useState<'admin' | 'staff' | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [staffProfile, setStaffProfile] = useState<StaffSessionProfile | null>(null);
+  const [isAdminPreviewMode, setIsAdminPreviewMode] = useState(false);
+  const adminReturnTokenRef = useRef<string | null>(null);
 
-  const initialQr = readQrParams();
+  // Admin staff management state
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffQrModalMember, setStaffQrModalMember] = useState<StaffMember | null>(null);
+
+  // Public Garment QR model viewer state
+  const initialParamsRef = useRef(readInitialUrlParams());
   const [qrViewTarget, setQrViewTarget] = useState<{
     modelId: string;
     batchId?: string | null;
   } | null>(
-    initialQr.modelId
-      ? { modelId: initialQr.modelId, batchId: initialQr.batchId }
+    initialParamsRef.current.modelId
+      ? { modelId: initialParamsRef.current.modelId, batchId: initialParamsRef.current.batchId }
       : null
   );
+  const [publicQrPayload, setPublicQrPayload] = useState<{
+    model: GarmentModel | null;
+    batches: CuttingBatch[];
+    products: ProductStock[];
+  } | null>(null);
 
   const [qrModalData, setQrModalData] = useState<{
     open: boolean;
     model: GarmentModel | null;
     batch?: CuttingBatch | null;
   }>({ open: false, model: null, batch: null });
+
+  const t = TRANSLATIONS[lang];
 
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
@@ -180,45 +212,399 @@ export default function App() {
     }
   }, [lang]);
 
+  // Fetch public garment model QR details if opened via ?model=...
   useEffect(() => {
+    if (!qrViewTarget) {
+      setPublicQrPayload(null);
+      return;
+    }
     let active = true;
-    fetch('/api/state')
+    fetch(`/api/models/${encodeURIComponent(qrViewTarget.modelId)}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((data: WarehouseState | null) => {
-        if (!active || !data || !Array.isArray(data.models)) return;
-        skipNextSaveRef.current = true;
-        setState(data);
-        setServerLoaded(true);
-      })
+      .then(
+        (
+          data: {
+            model: GarmentModel;
+            batches: CuttingBatch[];
+            products: ProductStock[];
+          } | null
+        ) => {
+          if (!active) return;
+          setPublicQrPayload(data ?? { model: null, batches: [], products: [] });
+        }
+      )
       .catch(() => {
-        if (active) setServerLoaded(true);
+        if (active) setPublicQrPayload({ model: null, batches: [], products: [] });
       });
     return () => {
       active = false;
     };
+  }, [qrViewTarget]);
+
+  // Helper to fetch protected warehouse state
+  const fetchWarehouseState = useCallback(async (token: string) => {
+    try {
+      const res = await fetch('/api/state', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        return 'revoked' as const;
+      }
+      if (!res.ok) return 'error' as const;
+      const data = (await res.json()) as WarehouseState;
+      skipNextSaveRef.current = true;
+      setState(data);
+      setStateLoaded(true);
+      return 'ok' as const;
+    } catch {
+      return 'error' as const;
+    }
   }, []);
 
-  useEffect(() => {
+  // Helper to fetch admin staff list
+  const fetchStaffList = useCallback(async (token: string) => {
+    setStaffLoading(true);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore
+      const res = await fetch('/api/admin/staff', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { staff: StaffMember[] };
+      if (Array.isArray(data.staff)) {
+        setStaffList(data.staff);
+        setStaffQrModalMember((prev) =>
+          prev ? data.staff.find((m) => m.id === prev.id) ?? null : null
+        );
+      }
+    } finally {
+      setStaffLoading(false);
     }
-    if (!serverLoaded) return;
+  }, []);
+
+  // Connect a staff member using an invite QR token
+  const connectWithStaffQrToken = useCallback(
+    async (inviteToken: string, isPreview: boolean) => {
+      setAuthPhase('connecting');
+      try {
+        const res = await fetch('/api/staff/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: inviteToken,
+            deviceInfo: isPreview ? 'Админ (Текшерүү)' : detectDeviceLabel(),
+          }),
+        });
+        const data = (await res.json().catch(() => null)) as {
+          sessionToken?: string;
+          staff?: StaffSessionProfile;
+          error?: string;
+        } | null;
+
+        if (!res.ok || !data?.sessionToken || !data?.staff) {
+          if (data?.error === 'DISABLED') {
+            setAuthPhase('disabled_qr');
+          } else {
+            setAuthPhase('invalid_qr');
+          }
+          return false;
+        }
+
+        setAuthToken(data.sessionToken);
+        setAuthRole('staff');
+        setStaffProfile(data.staff);
+        setActiveStage(data.staff.allowedStage);
+        setIsAdminPreviewMode(isPreview);
+        setStateLoaded(false);
+
+        const stateRes = await fetchWarehouseState(data.sessionToken);
+        if (stateRes === 'revoked') {
+          setAuthToken(null);
+          setAuthRole(null);
+          setStaffProfile(null);
+          setAuthPhase('revoked');
+          return false;
+        }
+
+        setAuthPhase('authenticated');
+        return true;
+      } catch {
+        setAuthPhase('invalid_qr');
+        return false;
+      }
+    },
+    [fetchWarehouseState]
+  );
+
+  // Initial bootstrap: check ?staff= param first, else check /api/auth/status
+  useEffect(() => {
+    const staffQrToken = initialParamsRef.current.staffToken;
+    if (staffQrToken) {
+      // Remove token from URL immediately so it does not linger in history/screenshots
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', '/');
+      }
+      connectWithStaffQrToken(staffQrToken, false);
+      return;
+    }
+
+    let active = true;
+    fetch('/api/auth/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { adminConfigured?: boolean } | null) => {
+        if (!active) return;
+        setAuthPhase(data?.adminConfigured ? 'login' : 'setup');
+      })
+      .catch(() => {
+        if (active) setAuthPhase('login');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [connectWithStaffQrToken]);
+
+  // Handle Admin authenticated
+  const handleAdminAuthenticated = useCallback(
+    async (token: string) => {
+      setAuthToken(token);
+      setAuthRole('admin');
+      setStaffProfile(null);
+      setIsAdminPreviewMode(false);
+      adminReturnTokenRef.current = null;
+      setActiveStage('overview');
+      setAuthPhase('authenticated');
+      await Promise.all([fetchWarehouseState(token), fetchStaffList(token)]);
+    },
+    [fetchWarehouseState, fetchStaffList]
+  );
+
+  // Sync state changes to server with Bearer auth
+  useEffect(() => {
+    if (authPhase !== 'authenticated' || !authToken || !stateLoaded) return;
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false;
       return;
     }
     fetch('/api/state', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
       body: JSON.stringify(state),
-    }).catch(() => {
-      // Offline fallback
-    });
-  }, [state, serverLoaded]);
+    })
+      .then((res) => {
+        if (res.status === 401 && authRole === 'staff') {
+          setAuthToken(null);
+          setAuthRole(null);
+          setStaffProfile(null);
+          setState(EMPTY_STATE);
+          setStateLoaded(false);
+          setAuthPhase('revoked');
+        }
+      })
+      .catch(() => {
+        // Ignore transient network errors
+      });
+  }, [state, stateLoaded, authPhase, authToken, authRole]);
 
-  const navItems: NavItem[] = [
+  // Live heartbeat for connected staff — enforces instant admin revocation!
+  useEffect(() => {
+    if (authPhase !== 'authenticated' || authRole !== 'staff' || !authToken) return;
+
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await fetch('/api/staff/me', {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (res.status === 401) {
+          setAuthToken(null);
+          setAuthRole(null);
+          setStaffProfile(null);
+          setState(EMPTY_STATE);
+          setStateLoaded(false);
+          setAuthPhase('revoked');
+          return;
+        }
+        if (res.ok) {
+          const data = (await res.json()) as { staff?: StaffSessionProfile };
+          if (data.staff) {
+            setStaffProfile(data.staff);
+            setActiveStage(data.staff.allowedStage);
+          }
+        }
+      } catch {
+        // Ignore transient offline errors
+      }
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [authPhase, authRole, authToken]);
+
+  // Auto-refresh staff connection status while Admin is viewing Staff tab
+  useEffect(() => {
+    if (authPhase !== 'authenticated' || authRole !== 'admin' || !authToken) return;
+    if (activeStage !== 'staff') return;
+
+    fetchStaffList(authToken);
+    const timer = window.setInterval(() => {
+      fetchStaffList(authToken);
+    }, 6000);
+
+    return () => window.clearInterval(timer);
+  }, [authPhase, authRole, authToken, activeStage, fetchStaffList]);
+
+  // Admin logout or Staff disconnect
+  const handleLogout = async () => {
+    if (authToken) {
+      const endpoint = authRole === 'admin' ? '/api/admin/logout' : '/api/staff/disconnect';
+      await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      }).catch(() => {});
+    }
+    setAuthToken(null);
+    setAuthRole(null);
+    setStaffProfile(null);
+    setIsAdminPreviewMode(false);
+    adminReturnTokenRef.current = null;
+    setState(EMPTY_STATE);
+    setStateLoaded(false);
+    setStaffList([]);
+    setAuthPhase('login');
+  };
+
+  // Admin previewing an employee's exact single-stage screen
+  const handlePreviewAsStaff = async (member: StaffMember) => {
+    if (!member.inviteToken || !authToken || authRole !== 'admin') return;
+    adminReturnTokenRef.current = authToken;
+    setStaffQrModalMember(null);
+    await connectWithStaffQrToken(member.inviteToken, true);
+  };
+
+  // Exit Admin preview back to full Admin panel
+  const handleReturnToAdmin = async () => {
+    if (authToken && authRole === 'staff') {
+      await fetch('/api/staff/disconnect', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      }).catch(() => {});
+    }
+    const savedAdminToken = adminReturnTokenRef.current;
+    if (savedAdminToken) {
+      adminReturnTokenRef.current = null;
+      setAuthToken(savedAdminToken);
+      setAuthRole('admin');
+      setStaffProfile(null);
+      setIsAdminPreviewMode(false);
+      setActiveStage('staff');
+      setAuthPhase('authenticated');
+      await Promise.all([fetchWarehouseState(savedAdminToken), fetchStaffList(savedAdminToken)]);
+    } else {
+      handleLogout();
+    }
+  };
+
+  // Staff CRUD handlers (Admin only)
+  const handleCreateStaff = async (payload: {
+    name: string;
+    roleNote?: string;
+    allowedStage: EmployeeStageKey;
+    seamstressName?: string;
+  }): Promise<StaffMember | null> => {
+    if (!authToken || authRole !== 'admin') return null;
+    const res = await fetch('/api/admin/staff', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { member?: StaffMember };
+    if (!data.member) return null;
+    setStaffList((prev) => [data.member!, ...prev]);
+    return data.member;
+  };
+
+  const handleToggleStaffActive = async (member: StaffMember) => {
+    if (!authToken || authRole !== 'admin') return;
+    const res = await fetch(`/api/admin/staff/${encodeURIComponent(member.id)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ active: !member.active }),
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as { member?: StaffMember };
+    if (data.member) {
+      setStaffList((prev) => prev.map((m) => (m.id === member.id ? data.member! : m)));
+      if (staffQrModalMember?.id === member.id && !data.member.active) {
+        setStaffQrModalMember(null);
+      }
+    }
+  };
+
+  const handleRegenerateStaffQr = (member: StaffMember) => {
+    setConfirmDialog({
+      open: true,
+      title: t.staff.qrRegenerateConfirmTitle,
+      message: t.staff.qrRegenerateConfirmMsg(member.name),
+      confirmLabel: t.staff.qrRegenerateConfirmBtn,
+      tone: 'primary',
+      onConfirm: async () => {
+        setConfirmDialog((c) => ({ ...c, open: false }));
+        if (!authToken || authRole !== 'admin') return;
+        const res = await fetch(`/api/admin/staff/${encodeURIComponent(member.id)}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ regenerateToken: true }),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { member?: StaffMember };
+        if (data.member) {
+          setStaffList((prev) => prev.map((m) => (m.id === member.id ? data.member! : m)));
+          setStaffQrModalMember(data.member);
+        }
+      },
+    });
+  };
+
+  const handleDeleteStaff = (member: StaffMember) => {
+    setConfirmDialog({
+      open: true,
+      title: t.staff.deleteTitle,
+      message: t.staff.deleteMsg(member.name),
+      confirmLabel: t.common.delete,
+      tone: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog((c) => ({ ...c, open: false }));
+        if (!authToken || authRole !== 'admin') return;
+        const res = await fetch(`/api/admin/staff/${encodeURIComponent(member.id)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!res.ok) return;
+        setStaffList((prev) => prev.filter((m) => m.id !== member.id));
+        if (staffQrModalMember?.id === member.id) {
+          setStaffQrModalMember(null);
+        }
+      },
+    });
+  };
+
+  const isStaffRestricted = authRole === 'staff' && Boolean(staffProfile);
+  const effectiveStage: StageKey = isStaffRestricted
+    ? staffProfile!.allowedStage
+    : activeStage;
+
+  const allNavItems: NavItem[] = [
     {
       key: 'overview',
       label: t.nav.overview,
@@ -231,6 +617,13 @@ export default function App() {
       label: t.nav.models,
       shortDesc: t.nav.modelsDesc,
       icon: QrCode,
+      group: 'admin',
+    },
+    {
+      key: 'staff',
+      label: t.nav.staff,
+      shortDesc: t.nav.staffDesc,
+      icon: UserCheck,
       group: 'admin',
     },
     {
@@ -277,12 +670,20 @@ export default function App() {
     },
   ];
 
+  const visibleNavItems = isStaffRestricted
+    ? allNavItems.filter((item) => item.key === staffProfile!.allowedStage)
+    : allNavItems;
+
   const navigateTo = (stage: StageKey) => {
+    if (isStaffRestricted && stage !== staffProfile!.allowedStage) {
+      return;
+    }
     setActiveStage(stage);
     setMobileMenuOpen(false);
   };
 
   const handleGoToDispatch = (productId?: string) => {
+    if (isStaffRestricted && staffProfile!.allowedStage !== 'dispatch') return;
     setPreselectedDispatchProductId(productId ?? null);
     navigateTo('dispatch');
   };
@@ -305,6 +706,7 @@ export default function App() {
     }
   };
 
+  // Warehouse domain handlers
   const handleCreateModel = (payload: {
     name: string;
     modelCode: string;
@@ -435,7 +837,7 @@ export default function App() {
       batchId: cuttingId,
       modelName: payload.modelName,
       color: roll.color,
-      seamstressName: 'Асель эже',
+      seamstressName: 'Асел эже',
       machineType: 'Түз тигүү' as MachineType,
       assignedPieces: payload.cutPieces,
       sewnPieces: 0,
@@ -506,7 +908,7 @@ export default function App() {
           batchId: createId('MANUAL'),
           modelName: payload.modelName,
           color: payload.color,
-          seamstressName: payload.seamstressName,
+          seamstressName: staffProfile?.seamstressName || payload.seamstressName,
           machineType: payload.machineType,
           assignedPieces: payload.assignedPieces,
           sewnPieces: 0,
@@ -587,7 +989,7 @@ export default function App() {
       color: payload.color,
       incomingPieces: payload.packedPieces,
       packedPieces: payload.packedPieces,
-      packedBy: 'Изат',
+      packedBy: staffProfile?.name || 'Изат',
       status: 'packing',
       updatedAt: nowIso,
     };
@@ -816,29 +1218,49 @@ export default function App() {
   };
 
   const handleResetDemo = () => {
+    if (authRole !== 'admin' || !authToken) return;
     setConfirmDialog({
       open: true,
       title: t.nav.resetDemoTitle,
       message: t.nav.resetDemoMsg,
       confirmLabel: t.nav.resetDemoBtn,
       tone: 'primary',
-      onConfirm: () => {
-        setState(INITIAL_WAREHOUSE_STATE);
+      onConfirm: async () => {
         setConfirmDialog((c) => ({ ...c, open: false }));
+        const res = await fetch('/api/reset', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (res.ok) {
+          const resetData = (await res.json()) as WarehouseState;
+          skipNextSaveRef.current = true;
+          setState(resetData);
+        } else {
+          setState(INITIAL_WAREHOUSE_STATE);
+        }
       },
     });
   };
 
+  // 1. Public Garment Model QR Viewer (accessible on phone scan without admin login)
   if (qrViewTarget) {
-    const foundModel = state.models.find((m) => m.id === qrViewTarget.modelId) ?? null;
+    const foundModel =
+      state.models.find((m) => m.id === qrViewTarget.modelId) ??
+      publicQrPayload?.model ??
+      null;
+    const allBatches =
+      state.cuttingBatches.length > 0 ? state.cuttingBatches : publicQrPayload?.batches ?? [];
+    const allProducts =
+      state.products.length > 0 ? state.products : publicQrPayload?.products ?? [];
+
     const foundBatch = qrViewTarget.batchId
-      ? state.cuttingBatches.find((b) => b.id === qrViewTarget.batchId) ?? null
+      ? allBatches.find((b) => b.id === qrViewTarget.batchId) ?? null
       : null;
     const relatedBatches = foundModel
-      ? state.cuttingBatches.filter((b) => b.modelId === foundModel.id)
+      ? allBatches.filter((b) => b.modelId === foundModel.id)
       : [];
     const relatedProducts = foundModel
-      ? state.products.filter(
+      ? allProducts.filter(
           (p) =>
             p.modelId === foundModel.id ||
             p.modelCode.toLowerCase() === foundModel.modelCode.toLowerCase()
@@ -859,10 +1281,37 @@ export default function App() {
     );
   }
 
-  const currentNav = navItems.find((n) => n.key === activeStage) ?? navItems[0];
+  // 2. Auth Gate (Setup / Admin Login / Staff Connecting / Revoked)
+  if (authPhase !== 'authenticated') {
+    const gateMode =
+      authPhase === 'checking' ? 'connecting' : authPhase;
+    return (
+      <AdminAuthGate
+        mode={gateMode}
+        t={t}
+        lang={lang}
+        variant={variant}
+        onChangeLang={setLang}
+        onChangeVariant={setVariant}
+        onAdminAuthenticated={handleAdminAuthenticated}
+        onResetToLogin={() => {
+          setAuthPhase('login');
+          fetch('/api/auth/status')
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d: { adminConfigured?: boolean } | null) => {
+              if (d) setAuthPhase(d.adminConfigured ? 'login' : 'setup');
+            })
+            .catch(() => {});
+        }}
+      />
+    );
+  }
+
+  const currentNav = visibleNavItems.find((n) => n.key === effectiveStage) ?? visibleNavItems[0];
   const awaitingZavskladBatches = state.packingBatches.filter(
     (b) => b.status === 'awaiting_zavsklad'
   );
+  const connectedStaffCount = staffList.filter((m) => m.active && m.connected).length;
 
   const ControlsBlock = () => (
     <div className="space-y-2">
@@ -934,148 +1383,235 @@ export default function App() {
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 border-r border-slate-200/90 dark:border-slate-800 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md">
         <div className="flex h-16 items-center px-6 border-b border-slate-200 dark:border-slate-800">
-          <button
-            type="button"
-            onClick={() => navigateTo('overview')}
-            className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0"
-          >
-            {t.brand}
-          </button>
+          {isStaffRestricted ? (
+            <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0">
+              {t.brand}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => navigateTo('overview')}
+              className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0"
+            >
+              {t.brand}
+            </button>
+          )}
         </div>
+
+        {/* Connected Staff Profile Card (Employee mode only) */}
+        {isStaffRestricted && staffProfile && (
+          <div className="mx-3 mt-3 rounded-xl border border-emerald-200/90 dark:border-emerald-800/70 bg-emerald-50/70 dark:bg-emerald-950/35 p-3">
+            <div className="flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+              {t.nav.connectedLive}
+            </div>
+            <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+              {staffProfile.name}
+            </div>
+            <div className="text-[11px] text-slate-600 dark:text-slate-400 truncate">
+              {t.staff.stageLabels[staffProfile.allowedStage]}
+            </div>
+          </div>
+        )}
 
         <div className="px-3 pt-3">
           <ControlsBlock />
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5" aria-label={t.brand}>
-          <div className="space-y-1">
-            {navItems
-              .filter((i) => i.group === 'overview' || i.group === 'admin')
-              .map((item) => {
+          {isStaffRestricted ? (
+            <div className="space-y-1">
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = activeStage === item.key;
                 return (
                   <button
                     key={item.key}
                     type="button"
                     onClick={() => navigateTo(item.key)}
-                    className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
-                      isActive
-                        ? 'bg-slate-900 dark:bg-emerald-600 text-white'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                    }`}
+                    className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left bg-slate-900 dark:bg-emerald-600 text-white"
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{item.label}</div>
-                      <div
-                        className={`text-[11px] truncate ${
-                          isActive
-                            ? 'text-slate-300 dark:text-emerald-100'
-                            : 'text-slate-500 dark:text-slate-400'
-                        }`}
-                      >
+                      <div className="text-[11px] text-slate-300 dark:text-emerald-100 truncate">
                         {item.shortDesc}
                       </div>
                     </div>
                   </button>
                 );
               })}
-          </div>
-
-          <div>
-            <div className="px-3 mb-2 text-xs font-medium text-slate-400 dark:text-slate-500">
-              {t.nav.groupProduction}
+              <p className="px-3 pt-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                {t.staff.onlyOwnSectionHint}
+              </p>
             </div>
-            <div className="space-y-1">
-              {navItems
-                .filter((i) => i.group === 'production')
-                .map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeStage === item.key;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => navigateTo(item.key)}
-                      className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
-                        isActive
-                          ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-950 dark:text-blue-200 font-semibold'
-                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                      }`}
-                    >
-                      <Icon
-                        className={`h-4 w-4 shrink-0 ${
-                          isActive ? 'text-blue-700 dark:text-blue-400' : 'text-slate-400'
+          ) : (
+            <>
+              <div className="space-y-1">
+                {visibleNavItems
+                  .filter((i) => i.group === 'overview' || i.group === 'admin')
+                  .map((item) => {
+                    const Icon = item.icon;
+                    const isActive = effectiveStage === item.key;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => navigateTo(item.key)}
+                        className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left transition-colors ${
+                          isActive
+                            ? 'bg-slate-900 dark:bg-emerald-600 text-white'
+                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
-                      />
-                      <div className="min-w-0">
-                        <div className="text-sm truncate">{item.label}</div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                          {item.shortDesc}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-
-          <div>
-            <div className="px-3 mb-2 text-xs font-medium text-slate-400 dark:text-slate-500">
-              {t.nav.groupWarehouse}
-            </div>
-            <div className="space-y-1">
-              {navItems
-                .filter((i) => i.group === 'warehouse')
-                .map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeStage === item.key;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => navigateTo(item.key)}
-                      className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left transition-colors ${
-                        isActive
-                          ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-950 dark:text-emerald-200 font-semibold'
-                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <Icon
-                          className={`h-4 w-4 shrink-0 ${
-                            isActive ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'
-                          }`}
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm truncate">{item.label}</div>
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                            {item.shortDesc}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <Icon className="h-4 w-4 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">{item.label}</div>
+                            <div
+                              className={`text-[11px] truncate ${
+                                isActive
+                                  ? 'text-slate-300 dark:text-emerald-100'
+                                  : 'text-slate-500 dark:text-slate-400'
+                              }`}
+                            >
+                              {item.shortDesc}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                      {item.key === 'zavsklad' && awaitingZavskladBatches.length > 0 && (
-                        <span className="font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums shrink-0">
-                          +{awaitingZavskladBatches.length}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
+                        {item.key === 'staff' && connectedStaffCount > 0 && (
+                          <span
+                            className={`font-mono text-xs font-semibold tabular-nums shrink-0 ${
+                              isActive
+                                ? 'text-emerald-300 dark:text-white'
+                                : 'text-emerald-700 dark:text-emerald-400'
+                            }`}
+                          >
+                            {connectedStaffCount}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+
+              <div>
+                <div className="px-3 mb-2 text-xs font-medium text-slate-400 dark:text-slate-500">
+                  {t.nav.groupProduction}
+                </div>
+                <div className="space-y-1">
+                  {visibleNavItems
+                    .filter((i) => i.group === 'production')
+                    .map((item) => {
+                      const Icon = item.icon;
+                      const isActive = effectiveStage === item.key;
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => navigateTo(item.key)}
+                          className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
+                            isActive
+                              ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-950 dark:text-blue-200 font-semibold'
+                              : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          <Icon
+                            className={`h-4 w-4 shrink-0 ${
+                              isActive ? 'text-blue-700 dark:text-blue-400' : 'text-slate-400'
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm truncate">{item.label}</div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                              {item.shortDesc}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+
+              <div>
+                <div className="px-3 mb-2 text-xs font-medium text-slate-400 dark:text-slate-500">
+                  {t.nav.groupWarehouse}
+                </div>
+                <div className="space-y-1">
+                  {visibleNavItems
+                    .filter((i) => i.group === 'warehouse')
+                    .map((item) => {
+                      const Icon = item.icon;
+                      const isActive = effectiveStage === item.key;
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => navigateTo(item.key)}
+                          className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left transition-colors ${
+                            isActive
+                              ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-950 dark:text-emerald-200 font-semibold'
+                              : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <Icon
+                              className={`h-4 w-4 shrink-0 ${
+                                isActive
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : 'text-slate-400'
+                              }`}
+                            />
+                            <div className="min-w-0">
+                              <div className="text-sm truncate">{item.label}</div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                {item.shortDesc}
+                              </div>
+                            </div>
+                          </div>
+                          {item.key === 'zavsklad' && awaitingZavskladBatches.length > 0 && (
+                            <span className="font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums shrink-0">
+                              +{awaitingZavskladBatches.length}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            </>
+          )}
         </nav>
 
-        <div className="border-t border-slate-200 dark:border-slate-800 p-3">
-          <button
-            type="button"
-            onClick={handleResetDemo}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white transition-colors"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            {t.nav.resetDemo}
-          </button>
+        <div className="border-t border-slate-200 dark:border-slate-800 p-3 space-y-2">
+          {!isStaffRestricted && (
+            <button
+              type="button"
+              onClick={handleResetDemo}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {t.nav.resetDemo}
+            </button>
+          )}
+          {isAdminPreviewMode ? (
+            <button
+              type="button"
+              onClick={handleReturnToAdmin}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800 dark:hover:bg-emerald-500 transition-colors"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              {t.nav.backToAdminBtn}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-700 dark:hover:text-red-400 transition-colors"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              {t.nav.logoutBtn}
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1104,9 +1640,9 @@ export default function App() {
               <ControlsBlock />
             </div>
             <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-              {navItems.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = activeStage === item.key;
+                const isActive = effectiveStage === item.key;
                 return (
                   <button
                     key={item.key}
@@ -1133,6 +1669,33 @@ export default function App() {
                 );
               })}
             </nav>
+            <div className="p-3 border-t border-slate-200 dark:border-slate-800">
+              {isAdminPreviewMode ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleReturnToAdmin();
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3 py-2 text-xs font-medium text-white"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  {t.nav.backToAdminBtn}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleLogout();
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  {t.nav.logoutBtn}
+                </button>
+              )}
+            </div>
           </aside>
         </div>
       )}
@@ -1151,13 +1714,19 @@ export default function App() {
               <Menu className="h-5 w-5" />
             </button>
             <div className="flex items-center gap-2 text-sm min-w-0">
-              <button
-                type="button"
-                onClick={() => navigateTo('overview')}
-                className="hidden sm:inline text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white whitespace-nowrap"
-              >
-                {t.brand}
-              </button>
+              {isStaffRestricted ? (
+                <span className="hidden sm:inline text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                  {t.brand}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => navigateTo('overview')}
+                  className="hidden sm:inline text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white whitespace-nowrap"
+                >
+                  {t.brand}
+                </button>
+              )}
               <span className="hidden sm:inline text-slate-300 dark:text-slate-700">/</span>
               <h1 className="font-semibold text-slate-900 dark:text-slate-100 truncate">
                 {currentNav.label}
@@ -1166,7 +1735,51 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
-            {activeStage !== 'models' && activeStage !== 'dispatch' ? (
+            {isStaffRestricted ? (
+              isAdminPreviewMode ? (
+                <button
+                  type="button"
+                  onClick={handleReturnToAdmin}
+                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3.5 py-2 text-xs sm:text-sm font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  {t.nav.backToAdminBtn}
+                </button>
+              ) : (
+                <div className="flex items-center gap-2.5">
+                  <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    {staffProfile?.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 whitespace-nowrap shrink-0"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    {t.nav.logoutBtn}
+                  </button>
+                </div>
+              )
+            ) : effectiveStage === 'staff' ? (
+              <button
+                type="button"
+                onClick={() => navigateTo('models')}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-4 py-2 text-xs sm:text-sm font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+              >
+                <QrCode className="h-4 w-4" />
+                {t.nav.models}
+              </button>
+            ) : effectiveStage === 'models' ? (
+              <button
+                type="button"
+                onClick={() => navigateTo('staff')}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-4 py-2 text-xs sm:text-sm font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+              >
+                <UserCheck className="h-4 w-4" />
+                {t.nav.topStaffBtn}
+              </button>
+            ) : effectiveStage !== 'dispatch' ? (
               <button
                 type="button"
                 onClick={() => handleGoToDispatch()}
@@ -1174,15 +1787,6 @@ export default function App() {
               >
                 <Truck className="h-4 w-4" />
                 {t.nav.topDispatchBtn}
-              </button>
-            ) : activeStage === 'models' ? (
-              <button
-                type="button"
-                onClick={() => navigateTo('cutting')}
-                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-4 py-2 text-xs sm:text-sm font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
-              >
-                <Scissors className="h-4 w-4" />
-                {t.nav.topCuttingBtn}
               </button>
             ) : (
               <button
@@ -1196,27 +1800,43 @@ export default function App() {
           </div>
         </header>
 
-        {/* Mobile Quick Stage Switcher */}
-        <div className="lg:hidden border-b border-slate-200/90 dark:border-slate-800 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md px-4 py-2 overflow-x-auto flex items-center gap-1.5">
-          {navItems.map((item) => (
+        {/* Admin Preview Banner */}
+        {isAdminPreviewMode && staffProfile && (
+          <div className="border-b border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/90 dark:bg-emerald-950/50 px-4 sm:px-6 lg:px-8 py-2 text-xs font-medium text-emerald-900 dark:text-emerald-200 flex items-center justify-between gap-3">
+            <span>{t.nav.previewBanner(staffProfile.name)}</span>
             <button
-              key={item.key}
               type="button"
-              onClick={() => navigateTo(item.key)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
-                activeStage === item.key
-                  ? 'bg-slate-900 dark:bg-emerald-600 text-white'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-              }`}
+              onClick={handleReturnToAdmin}
+              className="underline font-semibold whitespace-nowrap shrink-0"
             >
-              {item.label}
+              {t.nav.backToAdminBtn}
             </button>
-          ))}
-        </div>
+          </div>
+        )}
+
+        {/* Mobile Quick Stage Switcher (Admin only — staff see only their own single stage) */}
+        {!isStaffRestricted && (
+          <div className="lg:hidden border-b border-slate-200/90 dark:border-slate-800 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md px-4 py-2 overflow-x-auto flex items-center gap-1.5">
+            {visibleNavItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => navigateTo(item.key)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                  effectiveStage === item.key
+                    ? 'bg-slate-900 dark:bg-emerald-600 text-white'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Viewport Body */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {activeStage === 'overview' && (
+          {!isStaffRestricted && effectiveStage === 'overview' && (
             <PipelineOverview
               state={state}
               variant={variant}
@@ -1228,7 +1848,7 @@ export default function App() {
             />
           )}
 
-          {activeStage === 'models' && (
+          {!isStaffRestricted && effectiveStage === 'models' && (
             <AdminModelsStage
               models={state.models}
               t={t}
@@ -1239,17 +1859,31 @@ export default function App() {
             />
           )}
 
-          {activeStage === 'fabric' && (
+          {!isStaffRestricted && effectiveStage === 'staff' && (
+            <AdminStaffStage
+              staffList={staffList}
+              loading={staffLoading}
+              t={t}
+              onRefresh={() => authToken && fetchStaffList(authToken)}
+              onCreateStaff={handleCreateStaff}
+              onToggleActive={handleToggleStaffActive}
+              onDeleteStaff={handleDeleteStaff}
+              onOpenStaffQr={(member) => setStaffQrModalMember(member)}
+              onPreviewAsStaff={handlePreviewAsStaff}
+            />
+          )}
+
+          {effectiveStage === 'fabric' && (
             <FabricStage
               rolls={state.fabricRolls}
               t={t}
               onAddRoll={handleAddRoll}
               onDeleteRoll={handleDeleteRoll}
-              onGoToCutting={() => navigateTo('cutting')}
+              onGoToCutting={isStaffRestricted ? undefined : () => navigateTo('cutting')}
             />
           )}
 
-          {activeStage === 'cutting' && (
+          {effectiveStage === 'cutting' && (
             <CuttingStage
               models={state.models}
               rolls={state.fabricRolls}
@@ -1257,34 +1891,35 @@ export default function App() {
               t={t}
               onCreateCutting={handleCreateCutting}
               onOpenBatchQr={handleOpenBatchQr}
-              onGoToModels={() => navigateTo('models')}
-              onGoToSewing={() => navigateTo('sewing')}
+              onGoToModels={isStaffRestricted ? undefined : () => navigateTo('models')}
+              onGoToSewing={isStaffRestricted ? undefined : () => navigateTo('sewing')}
             />
           )}
 
-          {activeStage === 'sewing' && (
+          {effectiveStage === 'sewing' && (
             <SewingStage
               batches={state.sewingBatches}
               t={t}
+              lockedSeamstress={isStaffRestricted ? staffProfile?.seamstressName : undefined}
               onUpdateSewn={handleUpdateSewn}
               onAddTask={handleAddSewingTask}
               onSendToPacking={handleSendToPacking}
-              onGoToPacking={() => navigateTo('packing')}
+              onGoToPacking={isStaffRestricted ? undefined : () => navigateTo('packing')}
             />
           )}
 
-          {activeStage === 'packing' && (
+          {effectiveStage === 'packing' && (
             <PackingStage
               batches={state.packingBatches}
               t={t}
               onUpdatePackedCount={handleUpdatePackedCount}
               onHandOverToZavsklad={handleHandOverToZavsklad}
               onAddManualPacking={handleAddManualPacking}
-              onGoToZavsklad={() => navigateTo('zavsklad')}
+              onGoToZavsklad={isStaffRestricted ? undefined : () => navigateTo('zavsklad')}
             />
           )}
 
-          {activeStage === 'zavsklad' && (
+          {effectiveStage === 'zavsklad' && (
             <ZavskladStage
               models={state.models}
               products={state.products}
@@ -1294,11 +1929,11 @@ export default function App() {
               onAddDirectProduct={handleAddDirectProduct}
               onAddStockToExisting={handleAddStockToExisting}
               onDeleteProduct={handleDeleteProduct}
-              onGoToDispatch={handleGoToDispatch}
+              onGoToDispatch={isStaffRestricted ? undefined : handleGoToDispatch}
             />
           )}
 
-          {activeStage === 'dispatch' && (
+          {effectiveStage === 'dispatch' && (
             <DispatchStage
               products={state.products}
               dispatches={state.dispatches}
@@ -1318,6 +1953,15 @@ export default function App() {
         t={t}
         onClose={() => setQrModalData({ open: false, model: null, batch: null })}
         onPreviewMobile={handleOpenMobilePreview}
+      />
+
+      <StaffQrModal
+        open={Boolean(staffQrModalMember)}
+        member={staffQrModalMember}
+        t={t}
+        onClose={() => setStaffQrModalMember(null)}
+        onRegenerateQr={handleRegenerateStaffQr}
+        onPreviewAsStaff={handlePreviewAsStaff}
       />
 
       <ConfirmModal

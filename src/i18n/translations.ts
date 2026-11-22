@@ -7,6 +7,8 @@ export interface Translations {
     overviewDesc: string;
     models: string;
     modelsDesc: string;
+    staff: string;
+    staffDesc: string;
     fabric: string;
     fabricDesc: string;
     cutting: string;
@@ -32,6 +34,12 @@ export interface Translations {
     topDispatchBtn: string;
     topCuttingBtn: string;
     topZavskladBtn: string;
+    topStaffBtn: string;
+    logoutBtn: string;
+    backToAdminBtn: string;
+    employeeModeLabel: string;
+    connectedLive: string;
+    previewBanner: (name: string) => string;
   };
   common: {
     confirm: string;
@@ -380,6 +388,76 @@ export interface Translations {
     statusLabel: string;
     recentBatches: string;
   };
+  auth: {
+    setupTitle: string;
+    setupSub: string;
+    loginTitle: string;
+    loginSub: string;
+    passcodeLabel: string;
+    passcodePlaceholder: string;
+    setupPasscodePlaceholder: string;
+    confirmLabel: string;
+    confirmPlaceholder: string;
+    setupBtn: string;
+    loginBtn: string;
+    errShort: string;
+    errMismatch: string;
+    errInvalid: string;
+    errNetwork: string;
+    employeeHintTitle: string;
+    employeeHintDesc: string;
+    connectingTitle: string;
+    connectingSub: string;
+    revokedTitle: string;
+    revokedSub: string;
+    invalidQrTitle: string;
+    invalidQrSub: string;
+    disabledQrTitle: string;
+    disabledQrSub: string;
+    returnHomeBtn: string;
+  };
+  staff: {
+    formTitle: string;
+    formSub: string;
+    errName: string;
+    errGeneric: string;
+    nameLabel: string;
+    namePlaceholder: string;
+    stageLabel: string;
+    seamstressFilterLabel: string;
+    seamstressAllOption: string;
+    noteLabel: string;
+    notePlaceholder: string;
+    submitBtn: string;
+    listTitle: string;
+    listSummary: (total: number, connected: number, disabled: number) => string;
+    refreshBtn: string;
+    colEmployee: string;
+    colDepartment: string;
+    colStatus: string;
+    colActions: string;
+    emptyList: string;
+    statusConnected: string;
+    statusWaiting: string;
+    statusDisabled: string;
+    lastActivePrefix: string;
+    openQrBtn: string;
+    disableBtn: string;
+    enableBtn: string;
+    testViewBtn: string;
+    deleteTitle: string;
+    deleteMsg: (name: string) => string;
+    qrModalTitle: string;
+    qrModalSub: string;
+    qrScanInstruction: string;
+    qrRegenerateBtn: string;
+    qrRegenerateConfirmTitle: string;
+    qrRegenerateConfirmMsg: (name: string) => string;
+    qrRegenerateConfirmBtn: string;
+    qrPreviewAsStaffBtn: string;
+    onlyOwnSectionHint: string;
+    stageLabels: Record<'fabric' | 'cutting' | 'sewing' | 'packing' | 'zavsklad' | 'dispatch', string>;
+  };
 }
 
 export const TRANSLATIONS: Record<Lang, Translations> = {
@@ -390,6 +468,8 @@ export const TRANSLATIONS: Record<Lang, Translations> = {
       overviewDesc: 'Баары бир экранда',
       models: '0. Админ (Модель & QR)',
       modelsDesc: 'Сүрөт тартуу, QR түзүү',
+      staff: 'Сотрудниктер (QR)',
+      staffDesc: 'QR туташтыруу, өчүрүү',
       fabric: '1. Кездеме склад',
       fabricDesc: 'Рулон, кг эсеби',
       cutting: '2. Бычуу (Крой QR)',
@@ -416,6 +496,12 @@ export const TRANSLATIONS: Record<Lang, Translations> = {
       topDispatchBtn: 'Отправка жасоо',
       topCuttingBtn: 'Бычууга өтүү',
       topZavskladBtn: 'Завскладка өтүү',
+      topStaffBtn: 'Сотрудник QR',
+      logoutBtn: 'Чыгуу',
+      backToAdminBtn: 'Админге кайтуу',
+      employeeModeLabel: 'Сотрудник режими',
+      connectedLive: 'Туташкан',
+      previewBanner: (name) => `Текшерүү режими: ${name} өзүнүн гана бөлүмүн көрөт`,
     },
     common: {
       confirm: 'Ырастоо',
@@ -781,6 +867,86 @@ export const TRANSLATIONS: Record<Lang, Translations> = {
       statusLabel: 'Абалы',
       recentBatches: 'Акыркы крой партиялары',
     },
+    auth: {
+      setupTitle: 'Админ паролун орнотуу',
+      setupSub: 'Биринчи жолу кирүүдө админ паролун түзүңүз — ошондо гана сотрудниктерге QR ача аласыз',
+      loginTitle: 'Админ кирүү',
+      loginSub: 'Складды башкаруу жана сотрудниктерди QR аркылуу туташтыруу үчүн паролду жазыңыз',
+      passcodeLabel: 'Админ паролу (ПИН)',
+      passcodePlaceholder: 'Паролду жазыңыз',
+      setupPasscodePlaceholder: 'Кеминде 4 белги (мис: 1234)',
+      confirmLabel: 'Паролду кайталаңыз',
+      confirmPlaceholder: 'Паролду дагы бир жолу жазыңыз',
+      setupBtn: 'Орнотуу жана кирүү',
+      loginBtn: 'Админ болуп кирүү',
+      errShort: 'Пароль кеминде 4 белгиден турушу керек.',
+      errMismatch: 'Паролдор дал келген жок.',
+      errInvalid: 'Пароль туура эмес. Кайра текшериңиз.',
+      errNetwork: 'Серверге туташууда ката кетти. Кайра аракет кылыңыз.',
+      employeeHintTitle: 'Сотрудниксизби?',
+      employeeHintDesc: 'Сотрудниктерге пароль керек эмес — админ экранынан ачкан QR кодду телефон менен сканерлеп, өз бөлүмүнө кирет.',
+      connectingTitle: 'QR аркылуу туташууда...',
+      connectingSub: 'Сиздин бөлүмүңүз текшерилип жатат',
+      revokedTitle: 'Кирүү өчүрүлдү',
+      revokedSub: 'Админ сиздин кирүү укугуңузду өчүрдү же жаңы QR код түздү. Кайра туташуу үчүн админге кайрылыңыз.',
+      invalidQrTitle: 'QR код жараксыз',
+      invalidQrSub: 'Бул QR шилтеме эскирген же өчүрүлгөн. Админден жаңы QR код сураңыз.',
+      disabledQrTitle: 'Сотрудник өчүрүлгөн',
+      disabledQrSub: 'Админ бул сотрудниктин кирүүсүн убактылуу өчүрүп койгон.',
+      returnHomeBtn: 'Башкы экранга кайтуу',
+    },
+    staff: {
+      formTitle: 'Сотрудник кошуу (QR туташтыруу)',
+      formSub: 'Сотрудникти кошуп, анын бөлүмүн тандаңыз — ар бир адам өзүнүн гана бөлүгүн көрөт',
+      errName: 'Сотрудниктин атын жазыңыз.',
+      errGeneric: 'Сактоодо ката кетти. Кайра аракет кылыңыз.',
+      nameLabel: 'Сотрудниктин аты *',
+      namePlaceholder: 'Мисалы: Бакыт / Гүлзат',
+      stageLabel: 'Кайсы бөлүмдү гана көрөт? *',
+      seamstressFilterLabel: 'Кайсы тигүүчүнүн ишин көрөт?',
+      seamstressAllOption: 'Баардык 4 тигүүчү (Асель эже бөлүмү)',
+      noteLabel: 'Кызматы / Эскертүү',
+      notePlaceholder: 'Мисалы: Бычмачы, 2-смена',
+      submitBtn: 'Сотрудник кошуу & QR ачуу',
+      listTitle: 'Сотрудниктер жана QR кирүүлөр',
+      listSummary: (total, connected, disabled) =>
+        `Жалпы: ${total} · Туташкан: ${connected} · Өчүрүлгөн: ${disabled}`,
+      refreshBtn: 'Жаңылоо',
+      colEmployee: 'Сотрудник',
+      colDepartment: 'Уруксат берилген бөлүм',
+      colStatus: 'Абалы',
+      colActions: 'Аракеттер',
+      emptyList: 'Азырынча сотрудник кошула элек. Сол жактан биринчи сотрудникти кошуңуз.',
+      statusConnected: 'Туташкан',
+      statusWaiting: 'QR күтүүдө',
+      statusDisabled: 'Өчүрүлгөн',
+      lastActivePrefix: 'Акыркы аракет',
+      openQrBtn: 'QR ачуу',
+      disableBtn: 'Өчүрүү',
+      enableBtn: 'Кайра кошуу',
+      testViewBtn: 'Көрүү',
+      deleteTitle: 'Сотрудникти толук өчүрүү',
+      deleteMsg: (name) =>
+        `«${name}» кызматкерин тизмеден толук өчүрөсүзбү? Анын телефону дароо өчүрүлөт.`,
+      qrModalTitle: 'Сотрудникти туташтыруу QR коду',
+      qrModalSub: 'Бул QR кодду админ ачат — сотрудник телефондон сканерлеп өз бөлүмүнө кирет',
+      qrScanInstruction: 'Сотрудник телефонунун камерасы менен сканерлесин — ага өзүнүн гана бөлүмү ачылат',
+      qrRegenerateBtn: 'Жаңы QR түзүү',
+      qrRegenerateConfirmTitle: 'QR кодду жаңылоо',
+      qrRegenerateConfirmMsg: (name) =>
+        `«${name}» үчүн жаңы QR код түзүлүп, эски туташкан телефон дароо ажыратылат. Улантасызбы?`,
+      qrRegenerateConfirmBtn: 'Жаңы QR түзүү',
+      qrPreviewAsStaffBtn: 'Сотрудник катары көрүү',
+      onlyOwnSectionHint: 'Сизге ушул гана бөлүм жеткиликтүү',
+      stageLabels: {
+        fabric: '1. Кездеме склад',
+        cutting: '2. Бычуу (Крой QR)',
+        sewing: '3. Асель эже (Тигүү)',
+        packing: '4. Үтүк, Изат',
+        zavsklad: '5. Завсклад',
+        dispatch: '6. Кардарга отправка',
+      },
+    },
   },
   ru: {
     brand: 'Дордой Склад',
@@ -789,6 +955,8 @@ export const TRANSLATIONS: Record<Lang, Translations> = {
       overviewDesc: 'Всё на одном экране',
       models: '0. Админ (Модели & QR)',
       modelsDesc: 'Фото модели, генерация QR',
+      staff: 'Сотрудники (QR)',
+      staffDesc: 'Подключение по QR, отключение',
       fabric: '1. Склад ткани',
       fabricDesc: 'Приём рулонов, учёт кг',
       cutting: '2. Раскрой (QR на крой)',
@@ -815,6 +983,12 @@ export const TRANSLATIONS: Record<Lang, Translations> = {
       topDispatchBtn: 'Оформить отправку',
       topCuttingBtn: 'Перейти в раскрой',
       topZavskladBtn: 'Перейти к завскладу',
+      topStaffBtn: 'Сотрудники QR',
+      logoutBtn: 'Выйти',
+      backToAdminBtn: 'Вернуться к админу',
+      employeeModeLabel: 'Режим сотрудника',
+      connectedLive: 'Подключён',
+      previewBanner: (name) => `Режим проверки: ${name} видит только свой раздел`,
     },
     common: {
       confirm: 'Подтвердить',
@@ -1179,6 +1353,86 @@ export const TRANSLATIONS: Record<Lang, Translations> = {
       cutInfo: (pieces, kg) => `Выкроено: ${pieces} шт · ${kg} кг ткани`,
       statusLabel: 'Статус',
       recentBatches: 'Последние партии кроя',
+    },
+    auth: {
+      setupTitle: 'Создать пароль администратора',
+      setupSub: 'Задайте пароль при первом входе — он защитит админ-панель и QR-подключение сотрудников',
+      loginTitle: 'Вход администратора',
+      loginSub: 'Введите пароль для управления складом и подключения сотрудников по QR-коду',
+      passcodeLabel: 'Пароль администратора (ПИН)',
+      passcodePlaceholder: 'Введите пароль',
+      setupPasscodePlaceholder: 'Минимум 4 символа (напр. 1234)',
+      confirmLabel: 'Повторите пароль',
+      confirmPlaceholder: 'Введите пароль ещё раз',
+      setupBtn: 'Сохранить и войти',
+      loginBtn: 'Войти как админ',
+      errShort: 'Пароль должен содержать минимум 4 символа.',
+      errMismatch: 'Пароли не совпадают.',
+      errInvalid: 'Неверный пароль. Попробуйте снова.',
+      errNetwork: 'Ошибка соединения с сервером. Повторите попытку.',
+      employeeHintTitle: 'Вы сотрудник?',
+      employeeHintDesc: 'Сотрудникам пароль не нужен — просто отсканируйте QR-код с экрана администратора, и откроется ваш раздел.',
+      connectingTitle: 'Подключение по QR-коду...',
+      connectingSub: 'Проверяем ваш доступ и загружаем раздел',
+      revokedTitle: 'Доступ отключён',
+      revokedSub: 'Администратор отключил ваш доступ или обновил QR-код. Обратитесь к админу для повторного подключения.',
+      invalidQrTitle: 'QR-код недействителен',
+      invalidQrSub: 'Эта ссылка устарела или сотрудник удалён. Попросите администратора открыть новый QR-код.',
+      disabledQrTitle: 'Доступ сотрудника выключен',
+      disabledQrSub: 'Администратор временно отключил этого сотрудника.',
+      returnHomeBtn: 'На главный экран',
+    },
+    staff: {
+      formTitle: 'Добавить сотрудника (QR-доступ)',
+      formSub: 'Создайте сотрудника и выберите его участок — каждый видит только свой раздел',
+      errName: 'Введите имя сотрудника.',
+      errGeneric: 'Не удалось сохранить. Попробуйте снова.',
+      nameLabel: 'Имя сотрудника *',
+      namePlaceholder: 'Например: Бакыт / Гульзат',
+      stageLabel: 'К какому разделу дать доступ? *',
+      seamstressFilterLabel: 'Фильтр швеи (необязательно)',
+      seamstressAllOption: 'Все 4 швеи (цех Асель эже)',
+      noteLabel: 'Должность / Примечание',
+      notePlaceholder: 'Например: Закройщик, 2-я смена',
+      submitBtn: 'Добавить сотрудника и открыть QR',
+      listTitle: 'Сотрудники и QR-подключения',
+      listSummary: (total, connected, disabled) =>
+        `Всего: ${total} · Подключены: ${connected} · Отключены: ${disabled}`,
+      refreshBtn: 'Обновить',
+      colEmployee: 'Сотрудник',
+      colDepartment: 'Доступный раздел',
+      colStatus: 'Статус',
+      colActions: 'Действия',
+      emptyList: 'Сотрудников пока нет. Добавьте первого сотрудника слева.',
+      statusConnected: 'Подключён',
+      statusWaiting: 'Ждёт QR',
+      statusDisabled: 'Отключён',
+      lastActivePrefix: 'Активность',
+      openQrBtn: 'Открыть QR',
+      disableBtn: 'Отключить',
+      enableBtn: 'Включить',
+      testViewBtn: 'Открыть',
+      deleteTitle: 'Удалить сотрудника',
+      deleteMsg: (name) =>
+        `Удалить сотрудника «${name}»? Его телефон будет немедленно отключён от системы.`,
+      qrModalTitle: 'QR-код подключения сотрудника',
+      qrModalSub: 'Администратор открывает этот QR — сотрудник сканирует его телефоном',
+      qrScanInstruction: 'Сотрудник сканирует камерой телефона — откроется только его рабочий раздел',
+      qrRegenerateBtn: 'Новый QR',
+      qrRegenerateConfirmTitle: 'Обновить QR-код',
+      qrRegenerateConfirmMsg: (name) =>
+        `Для «${name}» будет создан новый QR-код, а старое устройство сразу отключится. Продолжить?`,
+      qrRegenerateConfirmBtn: 'Обновить QR',
+      qrPreviewAsStaffBtn: 'Открыть как сотрудник',
+      onlyOwnSectionHint: 'Вам доступен только этот раздел',
+      stageLabels: {
+        fabric: '1. Склад ткани',
+        cutting: '2. Раскрой (QR на крой)',
+        sewing: '3. Асель эже (Пошив)',
+        packing: '4. Утюжка, Изат',
+        zavsklad: '5. Завсклад',
+        dispatch: '6. Отправка клиенту',
+      },
     },
   },
 };
