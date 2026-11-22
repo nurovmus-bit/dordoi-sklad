@@ -18,7 +18,6 @@ const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.resolve(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'warehouse.json');
 const STAFF_FILE = path.join(DATA_DIR, 'staff.json');
-const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
 
 const ALLOWED_EMPLOYEE_STAGES: readonly EmployeeStageKey[] = [
   'fabric',
@@ -30,12 +29,6 @@ const ALLOWED_EMPLOYEE_STAGES: readonly EmployeeStageKey[] = [
 ];
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-
-interface StoredAdminAuth {
-  salt: string;
-  hash: string;
-  createdAt: string;
-}
 
 interface StoredStaffMember {
   id: string;
@@ -52,22 +45,12 @@ interface StoredStaffMember {
   createdAt: string;
 }
 
-interface AdminSession {
-  createdAt: number;
-  expiresAt: number;
-}
-
 interface StaffSession {
   staffId: string;
   createdAt: number;
   expiresAt: number;
 }
 
-type CallerContext =
-  | { role: 'admin'; token: string }
-  | { role: 'staff'; token: string; staff: StoredStaffMember };
-
-const adminSessions = new Map<string, AdminSession>();
 const staffSessions = new Map<string, StaffSession>();
 const lastSeenWriteMap = new Map<string, number>();
 
@@ -89,56 +72,6 @@ function timingSafeStringMatch(a: string, b: string): boolean {
   const hashA = hashSha256(a);
   const hashB = hashSha256(b);
   return crypto.timingSafeEqual(hashA, hashB);
-}
-
-function hashPasscodeScrypt(passcode: string): { salt: string; hash: string } {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(passcode, salt, 64).toString('hex');
-  return { salt, hash: derived };
-}
-
-function verifyPasscodeScrypt(passcode: string, salt: string, expectedHex: string): boolean {
-  const derived = crypto.scryptSync(passcode, salt, 64);
-  const expected = Buffer.from(expectedHex, 'hex');
-  if (derived.length !== expected.length) return false;
-  return crypto.timingSafeEqual(derived, expected);
-}
-
-function getEnvAdminPasscode(): string {
-  return (process.env.ADMIN_PASSCODE || '').trim();
-}
-
-function readStoredAdminAuth(): StoredAdminAuth | null {
-  ensureDataDir();
-  if (!fs.existsSync(AUTH_FILE)) return null;
-  try {
-    const raw = fs.readFileSync(AUTH_FILE, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<StoredAdminAuth>;
-    if (typeof parsed.salt === 'string' && typeof parsed.hash === 'string') {
-      return {
-        salt: parsed.salt,
-        hash: parsed.hash,
-        createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : new Date().toISOString(),
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredAdminAuth(auth: StoredAdminAuth): void {
-  ensureDataDir();
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), 'utf-8');
-}
-
-function isAdminConfigured(): { configured: boolean; usingEnvPasscode: boolean } {
-  const envPass = getEnvAdminPasscode();
-  if (envPass.length > 0) {
-    return { configured: true, usingEnvPasscode: true };
-  }
-  const stored = readStoredAdminAuth();
-  return { configured: Boolean(stored), usingEnvPasscode: false };
 }
 
 function createInitialStaffList(): StoredStaffMember[] {
@@ -264,7 +197,7 @@ function toStaffSessionProfile(member: StoredStaffMember): StaffSessionProfile {
   };
 }
 
-function toAdminStaffView(member: StoredStaffMember): StaffMember {
+function toStaffListView(member: StoredStaffMember): StaffMember {
   return {
     id: member.id,
     name: member.name,
@@ -289,45 +222,39 @@ function extractBearerToken(req: express.Request): string | null {
   return token.length > 0 ? token : null;
 }
 
-function getCaller(req: express.Request): CallerContext | null {
+type StaffAuthCheck =
+  | { kind: 'none' }
+  | { kind: 'revoked' }
+  | { kind: 'staff'; token: string; staff: StoredStaffMember };
+
+function resolveStaffBearer(req: express.Request): StaffAuthCheck {
   const token = extractBearerToken(req);
-  if (!token) return null;
+  if (!token) return { kind: 'none' };
 
   const now = Date.now();
-  const adminSession = adminSessions.get(token);
-  if (adminSession) {
-    if (adminSession.expiresAt < now) {
-      adminSessions.delete(token);
-      return null;
-    }
-    return { role: 'admin', token };
+  const session = staffSessions.get(token);
+  if (!session) return { kind: 'revoked' };
+  if (session.expiresAt < now) {
+    staffSessions.delete(token);
+    return { kind: 'revoked' };
   }
 
-  const staffSession = staffSessions.get(token);
-  if (staffSession) {
-    if (staffSession.expiresAt < now) {
-      staffSessions.delete(token);
-      return null;
-    }
-    const staffList = readStaffList();
-    const member = staffList.find((m) => m.id === staffSession.staffId);
-    if (!member || !member.active) {
-      staffSessions.delete(token);
-      return null;
-    }
-
-    const lastWrite = lastSeenWriteMap.get(member.id) ?? 0;
-    if (now - lastWrite > 15000) {
-      lastSeenWriteMap.set(member.id, now);
-      member.lastSeenAt = new Date(now).toISOString();
-      member.connected = true;
-      saveStaffList(staffList);
-    }
-
-    return { role: 'staff', token, staff: member };
+  const staffList = readStaffList();
+  const member = staffList.find((m) => m.id === session.staffId);
+  if (!member || !member.active) {
+    staffSessions.delete(token);
+    return { kind: 'revoked' };
   }
 
-  return null;
+  const lastWrite = lastSeenWriteMap.get(member.id) ?? 0;
+  if (now - lastWrite > 15000) {
+    lastSeenWriteMap.set(member.id, now);
+    member.lastSeenAt = new Date(now).toISOString();
+    member.connected = true;
+    saveStaffList(staffList);
+  }
+
+  return { kind: 'staff', token, staff: member };
 }
 
 function ensureDataFile(): WarehouseState {
@@ -455,7 +382,6 @@ function mergeScopedStaffUpdate(
           : current.fabricRolls,
       };
     case 'cutting': {
-      // Cutting deducts fabric kg, adds cutting batch, and appends new sewing batches
       const incomingSewing = Array.isArray(incoming.sewingBatches) ? incoming.sewingBatches : [];
       const existingIds = new Set(current.sewingBatches.map((b) => b.id));
       const newlyAddedSewing = incomingSewing.filter((b) => !existingIds.has(b.id));
@@ -558,7 +484,6 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '15mb' }));
 
-  // Ensure initial files exist on boot
   ensureDataFile();
   readStaffList();
 
@@ -566,113 +491,19 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Auth status check
-  app.get('/api/auth/status', (req, res) => {
-    const { configured, usingEnvPasscode } = isAdminConfigured();
-    const caller = getCaller(req);
-    if (!caller) {
-      res.json({
-        adminConfigured: configured,
-        usingEnvPasscode,
-        role: null,
-        staff: null,
-      });
+  // Staff management routes (blocked for restricted staff sessions)
+  app.get('/api/staff', (req, res) => {
+    if (extractBearerToken(req)) {
+      res.status(403).json({ error: 'FORBIDDEN' });
       return;
     }
-    if (caller.role === 'admin') {
-      res.json({
-        adminConfigured: configured,
-        usingEnvPasscode,
-        role: 'admin',
-        staff: null,
-      });
-      return;
-    }
-    res.json({
-      adminConfigured: configured,
-      usingEnvPasscode,
-      role: 'staff',
-      staff: toStaffSessionProfile(caller.staff),
-    });
-  });
-
-  // One-time Admin passcode claim (only when ADMIN_PASSCODE env is unset and no hash exists)
-  app.post('/api/admin/claim', (req, res) => {
-    const { configured } = isAdminConfigured();
-    if (configured) {
-      res.status(409).json({ error: 'ALREADY_CONFIGURED' });
-      return;
-    }
-    const passcode = sanitizeText(req.body?.passcode, 128);
-    if (passcode.length < 4) {
-      res.status(400).json({ error: 'PASSCODE_TOO_SHORT' });
-      return;
-    }
-    const { salt, hash } = hashPasscodeScrypt(passcode);
-    saveStoredAdminAuth({ salt, hash, createdAt: new Date().toISOString() });
-
-    const token = crypto.randomBytes(32).toString('hex');
-    const now = Date.now();
-    adminSessions.set(token, { createdAt: now, expiresAt: now + SESSION_TTL_MS });
-    res.json({ token, role: 'admin' });
-  });
-
-  // Admin login
-  app.post('/api/admin/login', (req, res) => {
-    const passcode = sanitizeText(req.body?.passcode, 128);
-    if (!passcode) {
-      res.status(400).json({ error: 'INVALID_PASSCODE' });
-      return;
-    }
-
-    const envPass = getEnvAdminPasscode();
-    let verified = false;
-    if (envPass.length > 0) {
-      verified = timingSafeStringMatch(passcode, envPass);
-    } else {
-      const stored = readStoredAdminAuth();
-      if (!stored) {
-        res.status(409).json({ error: 'NOT_CONFIGURED' });
-        return;
-      }
-      verified = verifyPasscodeScrypt(passcode, stored.salt, stored.hash);
-    }
-
-    if (!verified) {
-      res.status(401).json({ error: 'INVALID_PASSCODE' });
-      return;
-    }
-
-    const token = crypto.randomBytes(32).toString('hex');
-    const now = Date.now();
-    adminSessions.set(token, { createdAt: now, expiresAt: now + SESSION_TTL_MS });
-    res.json({ token, role: 'admin' });
-  });
-
-  // Admin logout
-  app.post('/api/admin/logout', (req, res) => {
-    const token = extractBearerToken(req);
-    if (token) {
-      adminSessions.delete(token);
-    }
-    res.json({ ok: true });
-  });
-
-  // Admin Staff Management (strictly Admin-only)
-  app.get('/api/admin/staff', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller || caller.role !== 'admin') {
-      res.status(403).json({ error: 'ADMIN_ONLY' });
-      return;
-    }
-    const list = readStaffList().map(toAdminStaffView);
+    const list = readStaffList().map(toStaffListView);
     res.json({ staff: list });
   });
 
-  app.post('/api/admin/staff', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller || caller.role !== 'admin') {
-      res.status(403).json({ error: 'ADMIN_ONLY' });
+  app.post('/api/staff', (req, res) => {
+    if (extractBearerToken(req)) {
+      res.status(403).json({ error: 'FORBIDDEN' });
       return;
     }
     const name = sanitizeText(req.body?.name, 80);
@@ -706,13 +537,12 @@ async function startServer() {
     };
     list.unshift(member);
     saveStaffList(list);
-    res.status(201).json({ member: toAdminStaffView(member) });
+    res.status(201).json({ member: toStaffListView(member) });
   });
 
-  app.patch('/api/admin/staff/:id', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller || caller.role !== 'admin') {
-      res.status(403).json({ error: 'ADMIN_ONLY' });
+  app.patch('/api/staff/:id', (req, res) => {
+    if (extractBearerToken(req)) {
+      res.status(403).json({ error: 'FORBIDDEN' });
       return;
     }
 
@@ -763,13 +593,12 @@ async function startServer() {
     }
 
     saveStaffList(list);
-    res.json({ member: toAdminStaffView(target) });
+    res.json({ member: toStaffListView(target) });
   });
 
-  app.delete('/api/admin/staff/:id', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller || caller.role !== 'admin') {
-      res.status(403).json({ error: 'ADMIN_ONLY' });
+  app.delete('/api/staff/:id', (req, res) => {
+    if (extractBearerToken(req)) {
+      res.status(403).json({ error: 'FORBIDDEN' });
       return;
     }
 
@@ -829,25 +658,25 @@ async function startServer() {
 
   // Staff live session heartbeat / verification
   app.get('/api/staff/me', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller || caller.role !== 'staff') {
+    const auth = resolveStaffBearer(req);
+    if (auth.kind !== 'staff') {
       res.status(401).json({ error: 'REVOKED' });
       return;
     }
     res.json({
       ok: true,
-      staff: toStaffSessionProfile(caller.staff),
+      staff: toStaffSessionProfile(auth.staff),
     });
   });
 
-  // Staff self disconnect
+  // Staff disconnect
   app.post('/api/staff/disconnect', (req, res) => {
-    const caller = getCaller(req);
-    if (caller && caller.role === 'staff') {
-      staffSessions.delete(caller.token);
-      if (!hasActiveStaffSession(caller.staff.id)) {
+    const auth = resolveStaffBearer(req);
+    if (auth.kind === 'staff') {
+      staffSessions.delete(auth.token);
+      if (!hasActiveStaffSession(auth.staff.id)) {
         const list = readStaffList();
-        const target = list.find((m) => m.id === caller.staff.id);
+        const target = list.find((m) => m.id === auth.staff.id);
         if (target) {
           target.connected = false;
           saveStaffList(list);
@@ -857,25 +686,25 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Protected Warehouse State (Admin gets all, Staff gets ONLY their stage's data)
+  // Warehouse State (Full workspace when no staff token; strictly stage-scoped for staff tokens)
   app.get('/api/state', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller) {
-      res.status(401).json({ error: 'UNAUTHORIZED' });
+    const auth = resolveStaffBearer(req);
+    if (auth.kind === 'revoked') {
+      res.status(401).json({ error: 'REVOKED' });
       return;
     }
     const state = ensureDataFile();
-    if (caller.role === 'admin') {
-      res.json(state);
+    if (auth.kind === 'staff') {
+      res.json(scopeStateForStaff(state, auth.staff));
       return;
     }
-    res.json(scopeStateForStaff(state, caller.staff));
+    res.json(state);
   });
 
   app.put('/api/state', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller) {
-      res.status(401).json({ error: 'UNAUTHORIZED' });
+    const auth = resolveStaffBearer(req);
+    if (auth.kind === 'revoked') {
+      res.status(401).json({ error: 'REVOKED' });
       return;
     }
     const body = req.body as Partial<WarehouseState> | undefined;
@@ -884,32 +713,32 @@ async function startServer() {
       return;
     }
 
-    if (caller.role === 'admin') {
-      if (!Array.isArray(body.models) || !Array.isArray(body.products)) {
-        res.status(400).json({ error: 'INVALID_BODY' });
-        return;
-      }
-      const nextState: WarehouseState = {
-        models: body.models,
-        fabricRolls: Array.isArray(body.fabricRolls) ? body.fabricRolls : [],
-        cuttingBatches: Array.isArray(body.cuttingBatches) ? body.cuttingBatches : [],
-        sewingBatches: Array.isArray(body.sewingBatches) ? body.sewingBatches : [],
-        packingBatches: Array.isArray(body.packingBatches) ? body.packingBatches : [],
-        products: body.products,
-        dispatches: Array.isArray(body.dispatches) ? body.dispatches : [],
-      };
-      saveStateToFile(nextState);
+    if (auth.kind === 'staff') {
+      const current = ensureDataFile();
+      const merged = mergeScopedStaffUpdate(current, body, auth.staff);
+      saveStateToFile(merged);
       res.json({ ok: true });
       return;
     }
 
-    const current = ensureDataFile();
-    const merged = mergeScopedStaffUpdate(current, body, caller.staff);
-    saveStateToFile(merged);
+    if (!Array.isArray(body.models) || !Array.isArray(body.products)) {
+      res.status(400).json({ error: 'INVALID_BODY' });
+      return;
+    }
+    const nextState: WarehouseState = {
+      models: body.models,
+      fabricRolls: Array.isArray(body.fabricRolls) ? body.fabricRolls : [],
+      cuttingBatches: Array.isArray(body.cuttingBatches) ? body.cuttingBatches : [],
+      sewingBatches: Array.isArray(body.sewingBatches) ? body.sewingBatches : [],
+      packingBatches: Array.isArray(body.packingBatches) ? body.packingBatches : [],
+      products: body.products,
+      dispatches: Array.isArray(body.dispatches) ? body.dispatches : [],
+    };
+    saveStateToFile(nextState);
     res.json({ ok: true });
   });
 
-  // Public read-only garment model QR lookup (no PII, for scanning fabric/cutting QR stickers)
+  // Public read-only garment model QR lookup
   app.get('/api/models/:id', (req, res) => {
     const state = ensureDataFile();
     const model = state.models.find((m) => m.id === req.params.id);
@@ -924,11 +753,9 @@ async function startServer() {
     res.json({ model, batches, products });
   });
 
-  // Reset demo data (strictly Admin-only)
   app.post('/api/reset', (req, res) => {
-    const caller = getCaller(req);
-    if (!caller || caller.role !== 'admin') {
-      res.status(403).json({ error: 'ADMIN_ONLY' });
+    if (extractBearerToken(req)) {
+      res.status(403).json({ error: 'FORBIDDEN' });
       return;
     }
     saveStateToFile(INITIAL_WAREHOUSE_STATE);

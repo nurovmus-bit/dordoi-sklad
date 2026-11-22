@@ -16,7 +16,7 @@ import {
   Languages,
   UserCheck,
   LogOut,
-  ShieldCheck,
+  ArrowLeft,
 } from 'lucide-react';
 import {
   CuttingBatch,
@@ -47,8 +47,9 @@ import { QrCodeModal } from './components/QrCodeModal';
 import { StaffQrModal } from './components/StaffQrModal';
 import { QrModelViewer } from './components/QrModelViewer';
 import { ConfirmModal } from './components/ConfirmModal';
-import { AdminAuthGate } from './components/AdminAuthGate';
+import { StaffStatusScreen } from './components/StaffStatusScreen';
 
+const STORAGE_KEY = 'dordoi_sklad_state_v2';
 const VARIANT_KEY = 'dordoi_sklad_variant_v1';
 const LANG_KEY = 'dordoi_sklad_lang_v1';
 
@@ -61,6 +62,37 @@ const EMPTY_STATE: WarehouseState = {
   products: [],
   dispatches: [],
 };
+
+function loadFallbackState(): WarehouseState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return INITIAL_WAREHOUSE_STATE;
+    const parsed = JSON.parse(raw) as Partial<WarehouseState>;
+    return {
+      models: Array.isArray(parsed.models) ? parsed.models : INITIAL_WAREHOUSE_STATE.models,
+      fabricRolls: Array.isArray(parsed.fabricRolls)
+        ? parsed.fabricRolls
+        : INITIAL_WAREHOUSE_STATE.fabricRolls,
+      cuttingBatches: Array.isArray(parsed.cuttingBatches)
+        ? parsed.cuttingBatches
+        : INITIAL_WAREHOUSE_STATE.cuttingBatches,
+      sewingBatches: Array.isArray(parsed.sewingBatches)
+        ? parsed.sewingBatches
+        : INITIAL_WAREHOUSE_STATE.sewingBatches,
+      packingBatches: Array.isArray(parsed.packingBatches)
+        ? parsed.packingBatches
+        : INITIAL_WAREHOUSE_STATE.packingBatches,
+      products: Array.isArray(parsed.products)
+        ? parsed.products
+        : INITIAL_WAREHOUSE_STATE.products,
+      dispatches: Array.isArray(parsed.dispatches)
+        ? parsed.dispatches
+        : INITIAL_WAREHOUSE_STATE.dispatches,
+    };
+  } catch {
+    return INITIAL_WAREHOUSE_STATE;
+  }
+}
 
 function loadInitialVariant(): UiVariant {
   try {
@@ -105,15 +137,7 @@ function detectDeviceLabel(): string {
   return 'Компьютер / Браузер';
 }
 
-type AuthPhase =
-  | 'checking'
-  | 'setup'
-  | 'login'
-  | 'connecting'
-  | 'authenticated'
-  | 'revoked'
-  | 'invalid_qr'
-  | 'disabled_qr';
+type StaffScreenPhase = 'none' | 'connecting' | 'revoked' | 'invalid_qr' | 'disabled_qr';
 
 interface NavItem {
   key: StageKey;
@@ -124,8 +148,13 @@ interface NavItem {
 }
 
 export default function App() {
-  const [state, setState] = useState<WarehouseState>(EMPTY_STATE);
-  const [stateLoaded, setStateLoaded] = useState(false);
+  const initialParamsRef = useRef(readInitialUrlParams());
+  const isInitialStaffScan = Boolean(initialParamsRef.current.staffToken);
+
+  const [state, setState] = useState<WarehouseState>(() =>
+    isInitialStaffScan ? EMPTY_STATE : loadFallbackState()
+  );
+  const [serverLoaded, setServerLoaded] = useState(false);
   const [variant, setVariant] = useState<UiVariant>(loadInitialVariant);
   const [lang, setLang] = useState<Lang>(loadInitialLang);
   const [activeStage, setActiveStage] = useState<StageKey>('overview');
@@ -134,21 +163,20 @@ export default function App() {
     null
   );
 
-  // Auth & RBAC state (tokens kept strictly in React memory — never in localStorage)
-  const [authPhase, setAuthPhase] = useState<AuthPhase>('checking');
-  const [authRole, setAuthRole] = useState<'admin' | 'staff' | null>(null);
-  const [authToken, setAuthToken] = useState<string | null>(null);
+  // Staff QR session (kept strictly in React memory — never in localStorage)
+  const [staffToken, setStaffToken] = useState<string | null>(null);
   const [staffProfile, setStaffProfile] = useState<StaffSessionProfile | null>(null);
-  const [isAdminPreviewMode, setIsAdminPreviewMode] = useState(false);
-  const adminReturnTokenRef = useRef<string | null>(null);
+  const [staffScreenPhase, setStaffScreenPhase] = useState<StaffScreenPhase>(
+    isInitialStaffScan ? 'connecting' : 'none'
+  );
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
 
-  // Admin staff management state
+  // Staff list management
   const [staffList, setStaffList] = useState<StaffMember[]>([]);
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffQrModalMember, setStaffQrModalMember] = useState<StaffMember | null>(null);
 
-  // Public Garment QR model viewer state
-  const initialParamsRef = useRef(readInitialUrlParams());
+  // Garment QR model viewer
   const [qrViewTarget, setQrViewTarget] = useState<{
     modelId: string;
     batchId?: string | null;
@@ -241,12 +269,12 @@ export default function App() {
     };
   }, [qrViewTarget]);
 
-  // Helper to fetch protected warehouse state
-  const fetchWarehouseState = useCallback(async (token: string) => {
+  const fetchWarehouseState = useCallback(async (token: string | null) => {
     try {
-      const res = await fetch('/api/state', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const headers: Record<string, string> = token
+        ? { Authorization: `Bearer ${token}` }
+        : {};
+      const res = await fetch('/api/state', { headers });
       if (res.status === 401) {
         return 'revoked' as const;
       }
@@ -254,20 +282,18 @@ export default function App() {
       const data = (await res.json()) as WarehouseState;
       skipNextSaveRef.current = true;
       setState(data);
-      setStateLoaded(true);
+      setServerLoaded(true);
       return 'ok' as const;
     } catch {
+      if (!token) setServerLoaded(true);
       return 'error' as const;
     }
   }, []);
 
-  // Helper to fetch admin staff list
-  const fetchStaffList = useCallback(async (token: string) => {
+  const fetchStaffList = useCallback(async () => {
     setStaffLoading(true);
     try {
-      const res = await fetch('/api/admin/staff', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch('/api/staff');
       if (!res.ok) return;
       const data = (await res.json()) as { staff: StaffMember[] };
       if (Array.isArray(data.staff)) {
@@ -281,17 +307,16 @@ export default function App() {
     }
   }, []);
 
-  // Connect a staff member using an invite QR token
   const connectWithStaffQrToken = useCallback(
-    async (inviteToken: string, isPreview: boolean) => {
-      setAuthPhase('connecting');
+    async (inviteToken: string, preview: boolean) => {
+      setStaffScreenPhase('connecting');
       try {
         const res = await fetch('/api/staff/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             token: inviteToken,
-            deviceInfo: isPreview ? 'Админ (Текшерүү)' : detectDeviceLabel(),
+            deviceInfo: preview ? 'Текшерүү режими' : detectDeviceLabel(),
           }),
         });
         const data = (await res.json().catch(() => null)) as {
@@ -302,128 +327,104 @@ export default function App() {
 
         if (!res.ok || !data?.sessionToken || !data?.staff) {
           if (data?.error === 'DISABLED') {
-            setAuthPhase('disabled_qr');
+            setStaffScreenPhase('disabled_qr');
           } else {
-            setAuthPhase('invalid_qr');
+            setStaffScreenPhase('invalid_qr');
           }
           return false;
         }
 
-        setAuthToken(data.sessionToken);
-        setAuthRole('staff');
+        setStaffToken(data.sessionToken);
         setStaffProfile(data.staff);
         setActiveStage(data.staff.allowedStage);
-        setIsAdminPreviewMode(isPreview);
-        setStateLoaded(false);
+        setIsPreviewMode(preview);
+        setServerLoaded(false);
 
         const stateRes = await fetchWarehouseState(data.sessionToken);
         if (stateRes === 'revoked') {
-          setAuthToken(null);
-          setAuthRole(null);
+          setStaffToken(null);
           setStaffProfile(null);
-          setAuthPhase('revoked');
+          setStaffScreenPhase('revoked');
           return false;
         }
 
-        setAuthPhase('authenticated');
+        setStaffScreenPhase('none');
         return true;
       } catch {
-        setAuthPhase('invalid_qr');
+        setStaffScreenPhase('invalid_qr');
         return false;
       }
     },
     [fetchWarehouseState]
   );
 
-  // Initial bootstrap: check ?staff= param first, else check /api/auth/status
+  // Initial load: if ?staff=... connect employee, else load full workspace directly!
   useEffect(() => {
-    const staffQrToken = initialParamsRef.current.staffToken;
-    if (staffQrToken) {
-      // Remove token from URL immediately so it does not linger in history/screenshots
+    const qrStaffToken = initialParamsRef.current.staffToken;
+    if (qrStaffToken) {
       if (typeof window !== 'undefined') {
         window.history.replaceState(null, '', '/');
       }
-      connectWithStaffQrToken(staffQrToken, false);
+      connectWithStaffQrToken(qrStaffToken, false);
       return;
     }
 
-    let active = true;
-    fetch('/api/auth/status')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { adminConfigured?: boolean } | null) => {
-        if (!active) return;
-        setAuthPhase(data?.adminConfigured ? 'login' : 'setup');
-      })
-      .catch(() => {
-        if (active) setAuthPhase('login');
-      });
+    fetchWarehouseState(null);
+    fetchStaffList();
+  }, [connectWithStaffQrToken, fetchWarehouseState, fetchStaffList]);
 
-    return () => {
-      active = false;
-    };
-  }, [connectWithStaffQrToken]);
-
-  // Handle Admin authenticated
-  const handleAdminAuthenticated = useCallback(
-    async (token: string) => {
-      setAuthToken(token);
-      setAuthRole('admin');
-      setStaffProfile(null);
-      setIsAdminPreviewMode(false);
-      adminReturnTokenRef.current = null;
-      setActiveStage('overview');
-      setAuthPhase('authenticated');
-      await Promise.all([fetchWarehouseState(token), fetchStaffList(token)]);
-    },
-    [fetchWarehouseState, fetchStaffList]
-  );
-
-  // Sync state changes to server with Bearer auth
+  // Sync state changes to server
   useEffect(() => {
-    if (authPhase !== 'authenticated' || !authToken || !stateLoaded) return;
+    if (!staffProfile) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch {
+        // Ignore
+      }
+    }
+    if (!serverLoaded) return;
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false;
       return;
     }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (staffToken) {
+      headers.Authorization = `Bearer ${staffToken}`;
+    }
     fetch('/api/state', {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
+      headers,
       body: JSON.stringify(state),
     })
       .then((res) => {
-        if (res.status === 401 && authRole === 'staff') {
-          setAuthToken(null);
-          setAuthRole(null);
+        if (res.status === 401 && staffToken) {
+          setStaffToken(null);
           setStaffProfile(null);
           setState(EMPTY_STATE);
-          setStateLoaded(false);
-          setAuthPhase('revoked');
+          setServerLoaded(false);
+          setStaffScreenPhase('revoked');
         }
       })
       .catch(() => {
-        // Ignore transient network errors
+        // Offline fallback
       });
-  }, [state, stateLoaded, authPhase, authToken, authRole]);
+  }, [state, serverLoaded, staffToken, staffProfile]);
 
-  // Live heartbeat for connected staff — enforces instant admin revocation!
+  // Live heartbeat for connected staff — enforces instant revocation!
   useEffect(() => {
-    if (authPhase !== 'authenticated' || authRole !== 'staff' || !authToken) return;
+    if (!staffToken || !staffProfile) return;
 
     const timer = window.setInterval(async () => {
       try {
         const res = await fetch('/api/staff/me', {
-          headers: { Authorization: `Bearer ${authToken}` },
+          headers: { Authorization: `Bearer ${staffToken}` },
         });
         if (res.status === 401) {
-          setAuthToken(null);
-          setAuthRole(null);
+          setStaffToken(null);
           setStaffProfile(null);
           setState(EMPTY_STATE);
-          setStateLoaded(false);
-          setAuthPhase('revoked');
+          setServerLoaded(false);
+          setStaffScreenPhase('revoked');
           return;
         }
         if (res.ok) {
@@ -439,86 +440,66 @@ export default function App() {
     }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [authPhase, authRole, authToken]);
+  }, [staffToken, staffProfile]);
 
-  // Auto-refresh staff connection status while Admin is viewing Staff tab
+  // Auto-refresh staff connection status while viewing Staff tab
   useEffect(() => {
-    if (authPhase !== 'authenticated' || authRole !== 'admin' || !authToken) return;
-    if (activeStage !== 'staff') return;
-
-    fetchStaffList(authToken);
+    if (staffProfile || activeStage !== 'staff') return;
+    fetchStaffList();
     const timer = window.setInterval(() => {
-      fetchStaffList(authToken);
+      fetchStaffList();
     }, 6000);
-
     return () => window.clearInterval(timer);
-  }, [authPhase, authRole, authToken, activeStage, fetchStaffList]);
+  }, [staffProfile, activeStage, fetchStaffList]);
 
-  // Admin logout or Staff disconnect
-  const handleLogout = async () => {
-    if (authToken) {
-      const endpoint = authRole === 'admin' ? '/api/admin/logout' : '/api/staff/disconnect';
-      await fetch(endpoint, {
+  // Employee self-disconnect
+  const handleStaffDisconnect = async () => {
+    if (staffToken) {
+      await fetch('/api/staff/disconnect', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
+        headers: { Authorization: `Bearer ${staffToken}` },
       }).catch(() => {});
     }
-    setAuthToken(null);
-    setAuthRole(null);
+    setStaffToken(null);
     setStaffProfile(null);
-    setIsAdminPreviewMode(false);
-    adminReturnTokenRef.current = null;
     setState(EMPTY_STATE);
-    setStateLoaded(false);
-    setStaffList([]);
-    setAuthPhase('login');
+    setServerLoaded(false);
+    setStaffScreenPhase('revoked');
   };
 
-  // Admin previewing an employee's exact single-stage screen
+  // Previewing an employee's exact single-stage screen
   const handlePreviewAsStaff = async (member: StaffMember) => {
-    if (!member.inviteToken || !authToken || authRole !== 'admin') return;
-    adminReturnTokenRef.current = authToken;
+    if (!member.inviteToken) return;
     setStaffQrModalMember(null);
     await connectWithStaffQrToken(member.inviteToken, true);
   };
 
-  // Exit Admin preview back to full Admin panel
-  const handleReturnToAdmin = async () => {
-    if (authToken && authRole === 'staff') {
+  // Exit preview back to full workspace
+  const handleExitPreview = async () => {
+    if (staffToken) {
       await fetch('/api/staff/disconnect', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
+        headers: { Authorization: `Bearer ${staffToken}` },
       }).catch(() => {});
     }
-    const savedAdminToken = adminReturnTokenRef.current;
-    if (savedAdminToken) {
-      adminReturnTokenRef.current = null;
-      setAuthToken(savedAdminToken);
-      setAuthRole('admin');
-      setStaffProfile(null);
-      setIsAdminPreviewMode(false);
-      setActiveStage('staff');
-      setAuthPhase('authenticated');
-      await Promise.all([fetchWarehouseState(savedAdminToken), fetchStaffList(savedAdminToken)]);
-    } else {
-      handleLogout();
-    }
+    setStaffToken(null);
+    setStaffProfile(null);
+    setIsPreviewMode(false);
+    setStaffScreenPhase('none');
+    setActiveStage('staff');
+    await Promise.all([fetchWarehouseState(null), fetchStaffList()]);
   };
 
-  // Staff CRUD handlers (Admin only)
+  // Staff CRUD handlers
   const handleCreateStaff = async (payload: {
     name: string;
     roleNote?: string;
     allowedStage: EmployeeStageKey;
     seamstressName?: string;
   }): Promise<StaffMember | null> => {
-    if (!authToken || authRole !== 'admin') return null;
-    const res = await fetch('/api/admin/staff', {
+    const res = await fetch('/api/staff', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     if (!res.ok) return null;
@@ -529,13 +510,9 @@ export default function App() {
   };
 
   const handleToggleStaffActive = async (member: StaffMember) => {
-    if (!authToken || authRole !== 'admin') return;
-    const res = await fetch(`/api/admin/staff/${encodeURIComponent(member.id)}`, {
+    const res = await fetch(`/api/staff/${encodeURIComponent(member.id)}`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ active: !member.active }),
     });
     if (!res.ok) return;
@@ -557,13 +534,9 @@ export default function App() {
       tone: 'primary',
       onConfirm: async () => {
         setConfirmDialog((c) => ({ ...c, open: false }));
-        if (!authToken || authRole !== 'admin') return;
-        const res = await fetch(`/api/admin/staff/${encodeURIComponent(member.id)}`, {
+        const res = await fetch(`/api/staff/${encodeURIComponent(member.id)}`, {
           method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ regenerateToken: true }),
         });
         if (!res.ok) return;
@@ -585,10 +558,8 @@ export default function App() {
       tone: 'danger',
       onConfirm: async () => {
         setConfirmDialog((c) => ({ ...c, open: false }));
-        if (!authToken || authRole !== 'admin') return;
-        const res = await fetch(`/api/admin/staff/${encodeURIComponent(member.id)}`, {
+        const res = await fetch(`/api/staff/${encodeURIComponent(member.id)}`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${authToken}` },
         });
         if (!res.ok) return;
         setStaffList((prev) => prev.filter((m) => m.id !== member.id));
@@ -599,7 +570,7 @@ export default function App() {
     });
   };
 
-  const isStaffRestricted = authRole === 'staff' && Boolean(staffProfile);
+  const isStaffRestricted = Boolean(staffProfile);
   const effectiveStage: StageKey = isStaffRestricted
     ? staffProfile!.allowedStage
     : activeStage;
@@ -1218,7 +1189,7 @@ export default function App() {
   };
 
   const handleResetDemo = () => {
-    if (authRole !== 'admin' || !authToken) return;
+    if (isStaffRestricted) return;
     setConfirmDialog({
       open: true,
       title: t.nav.resetDemoTitle,
@@ -1227,10 +1198,7 @@ export default function App() {
       tone: 'primary',
       onConfirm: async () => {
         setConfirmDialog((c) => ({ ...c, open: false }));
-        const res = await fetch('/api/reset', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
+        const res = await fetch('/api/reset', { method: 'POST' });
         if (res.ok) {
           const resetData = (await res.json()) as WarehouseState;
           skipNextSaveRef.current = true;
@@ -1242,7 +1210,7 @@ export default function App() {
     });
   };
 
-  // 1. Public Garment Model QR Viewer (accessible on phone scan without admin login)
+  // 1. Garment Model QR Viewer (?model=...)
   if (qrViewTarget) {
     const foundModel =
       state.models.find((m) => m.id === qrViewTarget.modelId) ??
@@ -1281,28 +1249,16 @@ export default function App() {
     );
   }
 
-  // 2. Auth Gate (Setup / Admin Login / Staff Connecting / Revoked)
-  if (authPhase !== 'authenticated') {
-    const gateMode =
-      authPhase === 'checking' ? 'connecting' : authPhase;
+  // 2. Staff QR connecting / revoked / disabled screen (never shown on normal root visits!)
+  if (staffScreenPhase !== 'none') {
     return (
-      <AdminAuthGate
-        mode={gateMode}
+      <StaffStatusScreen
+        mode={staffScreenPhase}
         t={t}
         lang={lang}
         variant={variant}
         onChangeLang={setLang}
         onChangeVariant={setVariant}
-        onAdminAuthenticated={handleAdminAuthenticated}
-        onResetToLogin={() => {
-          setAuthPhase('login');
-          fetch('/api/auth/status')
-            .then((r) => (r.ok ? r.json() : null))
-            .then((d: { adminConfigured?: boolean } | null) => {
-              if (d) setAuthPhase(d.adminConfigured ? 'login' : 'setup');
-            })
-            .catch(() => {});
-        }}
       />
     );
   }
@@ -1582,8 +1538,8 @@ export default function App() {
           )}
         </nav>
 
-        <div className="border-t border-slate-200 dark:border-slate-800 p-3 space-y-2">
-          {!isStaffRestricted && (
+        <div className="border-t border-slate-200 dark:border-slate-800 p-3">
+          {!isStaffRestricted ? (
             <button
               type="button"
               onClick={handleResetDemo}
@@ -1592,20 +1548,19 @@ export default function App() {
               <RotateCcw className="h-3.5 w-3.5" />
               {t.nav.resetDemo}
             </button>
-          )}
-          {isAdminPreviewMode ? (
+          ) : isPreviewMode ? (
             <button
               type="button"
-              onClick={handleReturnToAdmin}
+              onClick={handleExitPreview}
               className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800 dark:hover:bg-emerald-500 transition-colors"
             >
-              <ShieldCheck className="h-3.5 w-3.5" />
+              <ArrowLeft className="h-3.5 w-3.5" />
               {t.nav.backToAdminBtn}
             </button>
           ) : (
             <button
               type="button"
-              onClick={handleLogout}
+              onClick={handleStaffDisconnect}
               className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-700 dark:hover:text-red-400 transition-colors"
             >
               <LogOut className="h-3.5 w-3.5" />
@@ -1669,33 +1624,35 @@ export default function App() {
                 );
               })}
             </nav>
-            <div className="p-3 border-t border-slate-200 dark:border-slate-800">
-              {isAdminPreviewMode ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    handleReturnToAdmin();
-                  }}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3 py-2 text-xs font-medium text-white"
-                >
-                  <ShieldCheck className="h-3.5 w-3.5" />
-                  {t.nav.backToAdminBtn}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    handleLogout();
-                  }}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                  {t.nav.logoutBtn}
-                </button>
-              )}
-            </div>
+            {isStaffRestricted && (
+              <div className="p-3 border-t border-slate-200 dark:border-slate-800">
+                {isPreviewMode ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleExitPreview();
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3 py-2 text-xs font-medium text-white"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    {t.nav.backToAdminBtn}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleStaffDisconnect();
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    {t.nav.logoutBtn}
+                  </button>
+                )}
+              </div>
+            )}
           </aside>
         </div>
       )}
@@ -1736,13 +1693,13 @@ export default function App() {
 
           <div className="flex items-center gap-3 shrink-0">
             {isStaffRestricted ? (
-              isAdminPreviewMode ? (
+              isPreviewMode ? (
                 <button
                   type="button"
-                  onClick={handleReturnToAdmin}
+                  onClick={handleExitPreview}
                   className="inline-flex items-center gap-2 rounded-lg bg-slate-900 dark:bg-emerald-600 px-3.5 py-2 text-xs sm:text-sm font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
                 >
-                  <ShieldCheck className="h-4 w-4" />
+                  <ArrowLeft className="h-4 w-4" />
                   {t.nav.backToAdminBtn}
                 </button>
               ) : (
@@ -1753,7 +1710,7 @@ export default function App() {
                   </span>
                   <button
                     type="button"
-                    onClick={handleLogout}
+                    onClick={handleStaffDisconnect}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 whitespace-nowrap shrink-0"
                   >
                     <LogOut className="h-3.5 w-3.5" />
@@ -1800,13 +1757,13 @@ export default function App() {
           </div>
         </header>
 
-        {/* Admin Preview Banner */}
-        {isAdminPreviewMode && staffProfile && (
+        {/* Preview Mode Banner */}
+        {isPreviewMode && staffProfile && (
           <div className="border-b border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/90 dark:bg-emerald-950/50 px-4 sm:px-6 lg:px-8 py-2 text-xs font-medium text-emerald-900 dark:text-emerald-200 flex items-center justify-between gap-3">
             <span>{t.nav.previewBanner(staffProfile.name)}</span>
             <button
               type="button"
-              onClick={handleReturnToAdmin}
+              onClick={handleExitPreview}
               className="underline font-semibold whitespace-nowrap shrink-0"
             >
               {t.nav.backToAdminBtn}
@@ -1814,7 +1771,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Mobile Quick Stage Switcher (Admin only — staff see only their own single stage) */}
+        {/* Mobile Quick Stage Switcher (Hidden in restricted employee mode) */}
         {!isStaffRestricted && (
           <div className="lg:hidden border-b border-slate-200/90 dark:border-slate-800 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md px-4 py-2 overflow-x-auto flex items-center gap-1.5">
             {visibleNavItems.map((item) => (
@@ -1864,7 +1821,7 @@ export default function App() {
               staffList={staffList}
               loading={staffLoading}
               t={t}
-              onRefresh={() => authToken && fetchStaffList(authToken)}
+              onRefresh={fetchStaffList}
               onCreateStaff={handleCreateStaff}
               onToggleActive={handleToggleStaffActive}
               onDeleteStaff={handleDeleteStaff}
