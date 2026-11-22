@@ -1,0 +1,6 @@
+{
+  "name": "Дордой Склад",
+  "description": "Дордой базарындагы склад, кездеме, тигүү, штрих-код жана кардарга отправка эсебин жүргүзүүчү жөнөкөй система.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
